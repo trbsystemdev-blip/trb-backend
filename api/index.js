@@ -272,7 +272,7 @@ async function handleTextMessage(uid, text, replyToken) {
   }
 
   if (text === 'マニュアル' || text === '就業規則') {
-    await replyToUser(replyToken, '現在準備中です。しばらくお待ちください。');
+    await replyToUser(replyToken, '📖 使い方マニュアルはこちらから確認できます。\n\nhttps://trbsystemdev-blip.github.io/trb-liff/manual.html\n\n打刻・日報・シフト提出の手順を確認できます。');
     return;
   }
 

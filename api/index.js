@@ -357,6 +357,17 @@ async function saveReport(uid, data, replyToken) {
 }
 
 // --- LINE 送信ユーティリティ ---
+async function pushToUser(uid, message) {
+  try {
+    await axios.post('https://api.line.me/v2/bot/message/push', {
+      to: uid,
+      messages: [{ type: 'text', text: message }]
+    }, { headers: { 'Authorization': `Bearer ${LINE_CHANNEL_ACCESS_TOKEN}` } });
+  } catch (err) {
+    console.error('pushToUser error:', err.response ? err.response.data : err.message);
+  }
+}
+
 async function replyToUser(replyToken, message) {
   const isPush = replyToken && replyToken.startsWith('U');
   const url = isPush ? 'https://api.line.me/v2/bot/message/push' : 'https://api.line.me/v2/bot/message/reply';
@@ -545,6 +556,28 @@ app.post('/api/liff', async (req, res) => {
       saved++;
     }
     return res.json({ success: true, saved: saved });
+  }
+
+  if (action === 'saveReport') {
+    const { reportData } = req.body;
+    if (!reportData) return res.json({ success: false, error: 'reportData is required' });
+
+    const todayStr = format(toZonedTime(new Date(), 'Asia/Tokyo'), 'yyyy-MM-dd');
+    await supabase.from('reports').insert([{
+      line_uid: lineUid,
+      date: todayStr,
+      task_type: reportData.taskType || reportData.tourType || '',
+      count: reportData.count || '',
+      note: reportData.note || ''
+    }]);
+
+    // LINEに通知
+    const user = await getUserInfo(lineUid);
+    const name = user ? user.name : lineUid;
+    const msg = `【日報受信】\n名前：${name}\n業務：${reportData.taskType || reportData.tourType || ''}\n数量：${reportData.count || '-'}\n備考：${reportData.note || 'なし'}`;
+    await pushToUser(lineUid, msg);
+
+    return res.json({ success: true });
   }
 
   res.json({ success: false, error: 'Unknown action' });

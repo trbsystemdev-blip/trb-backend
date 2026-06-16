@@ -1,8 +1,9 @@
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
-const { format, addMinutes, subMinutes, roundToNearestMinutes } = require('date-fns');
+const { format } = require('date-fns');
 const { toZonedTime } = require('date-fns-tz');
+const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
 app.use(cors());
@@ -16,74 +17,32 @@ const RAIN_ALLOWANCE = 3000;
 const TRANSPORT_FEE = 500;
 
 // --- 環境変数 ---
-const KINTONE_DOMAIN = process.env.KINTONE_DOMAIN;
-const KINTONE_TOKEN_USERS = process.env.KINTONE_TOKEN_USERS;
-const KINTONE_TOKEN_ATTENDANCE = process.env.KINTONE_TOKEN_ATTENDANCE;
-const KINTONE_TOKEN_SHIFTS = process.env.KINTONE_TOKEN_SHIFTS;
-const KINTONE_TOKEN_REPORTS = process.env.KINTONE_TOKEN_REPORTS;
-const APP_ID_USERS = process.env.APP_ID_USERS;
-const APP_ID_ATTENDANCE = process.env.APP_ID_ATTENDANCE;
-const APP_ID_SHIFTS = process.env.APP_ID_SHIFTS;
-const APP_ID_REPORTS = process.env.APP_ID_REPORTS;
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_KEY = process.env.SUPABASE_KEY; // Service Role Key推奨
 const LINE_CHANNEL_ACCESS_TOKEN = process.env.LINE_CHANNEL_ACCESS_TOKEN;
 
-// --- KINTONE API ユーティリティ ---
-function getTokenForApp(appId) {
-  const id = String(appId);
-  if (id === APP_ID_USERS) return KINTONE_TOKEN_USERS;
-  if (id === APP_ID_ATTENDANCE) return KINTONE_TOKEN_ATTENDANCE;
-  if (id === APP_ID_SHIFTS) return KINTONE_TOKEN_SHIFTS;
-  if (id === APP_ID_REPORTS) return KINTONE_TOKEN_REPORTS;
-  return KINTONE_TOKEN_USERS;
-}
-
-async function kintoneGet(appId, query) {
-  const token = getTokenForApp(appId);
-  const url = `https://${KINTONE_DOMAIN}/k/v1/records.json?app=${appId}&query=${encodeURIComponent(query)}`;
-  try {
-    const res = await axios.get(url, { headers: { 'X-Cybozu-API-Token': token } });
-    return res.data;
-  } catch (err) {
-    console.error('kintoneGet error:', err.response ? err.response.data : err.message);
-    return { records: [] };
-  }
-}
-
-async function kintonePost(appId, record) {
-  const token = getTokenForApp(appId);
-  const url = `https://${KINTONE_DOMAIN}/k/v1/record.json`;
-  try {
-    const res = await axios.post(url, { app: appId, record: record }, { headers: { 'X-Cybozu-API-Token': token } });
-    return res.data;
-  } catch (err) {
-    console.error('kintonePost error:', err.response ? err.response.data : err.message);
-    return null;
-  }
-}
-
-async function kintonePut(appId, id, record) {
-  const token = getTokenForApp(appId);
-  const url = `https://${KINTONE_DOMAIN}/k/v1/record.json`;
-  try {
-    const res = await axios.put(url, { app: appId, id: id, record: record }, { headers: { 'X-Cybozu-API-Token': token } });
-    return res.data;
-  } catch (err) {
-    console.error('kintonePut error:', err.response ? err.response.data : err.message);
-    return null;
-  }
-}
+// --- Supabase クライアント ---
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 // --- ユーザー情報管理 ---
 async function getUserInfo(uid) {
-  const res = await kintoneGet(APP_ID_USERS, `line_uid = "${uid}" limit 1`);
-  if (res.records && res.records.length > 0) {
-    const r = res.records[0];
+  const { data, error } = await supabase
+    .from('users')
+    .select('*')
+    .eq('line_uid', uid)
+    .single();
+  
+  if (error && error.code !== 'PGRST116') { // PGRST116 is "No rows found"
+    console.error('getUserInfo error:', error);
+  }
+  
+  if (data) {
     return {
-      id: r.$id.value,
-      name: r.name.value || uid,
-      role: r.role.value || 'メインドライバー',
-      hourlyWage: parseInt(r.hourly_wage ? r.hourly_wage.value : 0) || 0,
-      state: r.state ? r.state.value : ''
+      id: data.id,
+      name: data.name || uid,
+      role: data.role || 'メインドライバー',
+      hourlyWage: data.hourly_wage || 0,
+      state: data.state || ''
     };
   }
   return null;
@@ -92,22 +51,26 @@ async function getUserInfo(uid) {
 async function ensureUserExists(uid) {
   const user = await getUserInfo(uid);
   if (!user) {
-    await kintonePost(APP_ID_USERS, {
-      line_uid: { value: uid },
-      name: { value: '' },
-      role: { value: 'メインドライバー' },
-      hourly_wage: { value: 0 },
-      state: { value: '' }
-    });
+    const { error } = await supabase
+      .from('users')
+      .insert([{
+        line_uid: uid,
+        name: '',
+        role: 'メインドライバー',
+        hourly_wage: 0,
+        state: ''
+      }]);
+    if (error) console.error('ensureUserExists error:', error);
   }
 }
 
 async function setUserState(uid, state) {
   await ensureUserExists(uid);
-  const user = await getUserInfo(uid);
-  if (user) {
-    await kintonePut(APP_ID_USERS, user.id, { state: { value: state } });
-  }
+  const { error } = await supabase
+    .from('users')
+    .update({ state: state })
+    .eq('line_uid', uid);
+  if (error) console.error('setUserState error:', error);
 }
 
 // --- 勤怠打刻ロジック ---
@@ -130,9 +93,15 @@ function roundTime(dateObj, isClockIn) {
 
 async function findTodayAttendance(uid) {
   const today = format(toZonedTime(new Date(), 'Asia/Tokyo'), 'yyyy-MM-dd');
-  const res = await kintoneGet(APP_ID_ATTENDANCE, `line_uid = "${uid}" and date = "${today}" limit 1`);
-  if (res.records && res.records.length > 0) return res.records[0];
-  return null;
+  const { data, error } = await supabase
+    .from('attendance')
+    .select('*')
+    .eq('line_uid', uid)
+    .eq('date', today)
+    .single();
+    
+  if (error && error.code !== 'PGRST116') console.error('findTodayAttendance error:', error);
+  return data;
 }
 
 async function handleLocation(uid, lat, lng, replyToken) {
@@ -150,29 +119,31 @@ async function handleLocation(uid, lat, lng, replyToken) {
       const timeStr = format(roundedIn, 'HH:mm');
       const actualStr = format(now, 'HH:mm');
 
-      await kintonePost(APP_ID_ATTENDANCE, {
-        date: { value: todayStr },
-        line_uid: { value: uid },
-        name: { value: user.name },
-        role: { value: user.role },
-        clock_in: { value: timeStr },
-        break_minutes: { value: BREAK_MINUTES },
-        transportation: { value: TRANSPORT_FEE },
-        gps: { value: gps }
-      });
+      const { error } = await supabase
+        .from('attendance')
+        .insert([{
+          line_uid: uid,
+          date: todayStr,
+          clock_in: timeStr,
+          break_minutes: BREAK_MINUTES,
+          transportation: TRANSPORT_FEE,
+          gps: gps
+        }]);
+      
+      if (error) console.error('Clock in error:', error);
 
       let msg = `《出勤》${user.name}さん\n打刻時刻：${actualStr}`;
       if (actualStr !== timeStr) msg += `\n見なし時刻：${timeStr}（前後${ROUND_MINUTES}分見なし）`;
       msg += `\n交通費：${TRANSPORT_FEE}円 ✅`;
       await replyToUser(replyToken, msg);
 
-    } else if (!record.clock_out.value) {
+    } else if (!record.clock_out) {
       // 退勤
       const roundedOut = roundTime(now, false);
       const timeStr = format(roundedOut, 'HH:mm');
       const actualStr = format(now, 'HH:mm');
 
-      const inTime = record.clock_in.value;
+      const inTime = record.clock_in;
       let workMin = 0;
       let pay = 0;
 
@@ -184,16 +155,21 @@ async function handleLocation(uid, lat, lng, replyToken) {
 
         const hourlyWage = user.hourlyWage || 0;
         const basePay = Math.round((workMin / 60) * hourlyWage);
-        const penalty = parseInt(record.penalty ? record.penalty.value : 0) || 0;
-        const rainAllowance = parseInt(record.rain_allowance ? record.rain_allowance.value : 0) || 0;
-        const transport = parseInt(record.transportation ? record.transportation.value : TRANSPORT_FEE) || TRANSPORT_FEE;
+        const penalty = record.penalty || 0;
+        const rainAllowance = record.rain_allowance || 0;
+        const transport = record.transportation || TRANSPORT_FEE;
         pay = basePay + penalty + rainAllowance + transport;
       }
 
-      await kintonePut(APP_ID_ATTENDANCE, record.$id.value, {
-        clock_out: { value: timeStr },
-        work_minutes: { value: workMin }
-      });
+      const { error } = await supabase
+        .from('attendance')
+        .update({
+          clock_out: timeStr,
+          work_minutes: workMin
+        })
+        .eq('id', record.id);
+        
+      if (error) console.error('Clock out error:', error);
 
       const workH = Math.floor(workMin / 60);
       const workM = workMin % 60;
@@ -212,7 +188,7 @@ async function handleLocation(uid, lat, lng, replyToken) {
   }
 }
 
-// --- 日報フロー（簡易版、インメモリキャッシュ） ---
+// --- 日報フロー（インメモリキャッシュ） ---
 const tempCache = {};
 
 async function handleTextMessage(uid, text, replyToken) {
@@ -228,7 +204,7 @@ async function handleTextMessage(uid, text, replyToken) {
   if (text === '雨天補償申請') {
     const record = await findTodayAttendance(uid);
     if (record) {
-      await kintonePut(APP_ID_ATTENDANCE, record.$id.value, { rain_allowance: { value: RAIN_ALLOWANCE } });
+      await supabase.from('attendance').update({ rain_allowance: RAIN_ALLOWANCE }).eq('id', record.id);
       await replyToUser(replyToken, `${user.name}さん、雨天補償（${RAIN_ALLOWANCE}円）を記録しました。`);
     } else {
       await replyToUser(replyToken, '本日の出勤記録がありません。先に出勤打刻をしてください。');
@@ -239,7 +215,7 @@ async function handleTextMessage(uid, text, replyToken) {
   if (text === '遅刻申告') {
     const record = await findTodayAttendance(uid);
     if (record) {
-      await kintonePut(APP_ID_ATTENDANCE, record.$id.value, { penalty: { value: LATE_PENALTY } });
+      await supabase.from('attendance').update({ penalty: LATE_PENALTY }).eq('id', record.id);
       await replyToUser(replyToken, `${user.name}さん、遅刻ペナルティ（${LATE_PENALTY}円）を記録しました。`);
     } else {
       await replyToUser(replyToken, '本日の出勤記録がありません。');
@@ -293,18 +269,19 @@ async function handleReportFlow(uid, text, replyToken) {
 }
 
 async function saveReport(uid, data, replyToken) {
-  const user = await getUserInfo(uid);
   const todayStr = format(toZonedTime(new Date(), 'Asia/Tokyo'), 'yyyy-MM-dd');
 
-  await kintonePost(APP_ID_REPORTS, {
-    date: { value: todayStr },
-    line_uid: { value: uid },
-    name: { value: user ? user.name : '' },
-    role: { value: user ? user.role : '' },
-    task_type: { value: data.taskType || '' },
-    count: { value: data.count || '' },
-    note: { value: data.note || '' }
-  });
+  const { error } = await supabase
+    .from('reports')
+    .insert([{
+      line_uid: uid,
+      date: todayStr,
+      task_type: data.taskType || '',
+      count: data.count || '',
+      note: data.note || ''
+    }]);
+    
+  if (error) console.error('saveReport error:', error);
 
   await setUserState(uid, '');
   delete tempCache[uid];
@@ -373,30 +350,36 @@ app.get('/api/liff', async (req, res) => {
     const startDate = `${year}-${month}-01`;
     const endDate = `${year}-${month}-31`;
 
-    const monthRes = await kintoneGet(APP_ID_ATTENDANCE, `line_uid = "${lineUid}" and date >= "${startDate}" and date <= "${endDate}" order by date asc limit 100`);
+    const { data: monthRes } = await supabase
+      .from('attendance')
+      .select('*')
+      .eq('line_uid', lineUid)
+      .gte('date', startDate)
+      .lte('date', endDate)
+      .order('date', { ascending: true });
     
     let records = [];
     let totalWorkMin = 0;
     let totalPay = 0;
     let workDays = 0;
 
-    if (monthRes.records) {
-      records = monthRes.records.map(r => {
-        const wMin = parseInt(r.work_minutes ? r.work_minutes.value : 0) || 0;
-        const penalty = parseInt(r.penalty ? r.penalty.value : 0) || 0;
-        const rain = parseInt(r.rain_allowance ? r.rain_allowance.value : 0) || 0;
-        const transport = parseInt(r.transportation ? r.transportation.value : 0) || 0;
+    if (monthRes) {
+      records = monthRes.map(r => {
+        const wMin = r.work_minutes || 0;
+        const penalty = r.penalty || 0;
+        const rain = r.rain_allowance || 0;
+        const transport = r.transportation || 0;
         const basePay = Math.round((wMin / 60) * user.hourlyWage);
         const dayPay = basePay + penalty + rain + transport;
 
         totalWorkMin += wMin;
         totalPay += dayPay;
-        if (r.clock_in && r.clock_in.value) workDays++;
+        if (r.clock_in) workDays++;
 
         return {
-          date: r.date.value,
-          clockIn: r.clock_in ? r.clock_in.value : null,
-          clockOut: r.clock_out ? r.clock_out.value : null,
+          date: r.date,
+          clockIn: r.clock_in ? r.clock_in.substring(0, 5) : null,
+          clockOut: r.clock_out ? r.clock_out.substring(0, 5) : null,
           workMin: wMin,
           workHours: wMin ? `${Math.floor(wMin/60)}h${wMin%60}m` : '-',
           penalty: penalty,
@@ -408,23 +391,35 @@ app.get('/api/liff', async (req, res) => {
     }
 
     const todayStr = format(toZonedTime(new Date(), 'Asia/Tokyo'), 'yyyy-MM-dd');
-    const todayRes = await kintoneGet(APP_ID_ATTENDANCE, `line_uid = "${lineUid}" and date = "${todayStr}" limit 1`);
+    const { data: todayRes } = await supabase
+      .from('attendance')
+      .select('*')
+      .eq('line_uid', lineUid)
+      .eq('date', todayStr)
+      .single();
+      
     let todayData = null;
-    if (todayRes.records && todayRes.records.length > 0) {
-      const r = todayRes.records[0];
+    if (todayRes) {
       todayData = {
-        clockIn: r.clock_in ? r.clock_in.value : null,
-        clockOut: r.clock_out ? r.clock_out.value : null,
-        workMin: parseInt(r.work_minutes ? r.work_minutes.value : 0) || 0
+        clockIn: todayRes.clock_in ? todayRes.clock_in.substring(0, 5) : null,
+        clockOut: todayRes.clock_out ? todayRes.clock_out.substring(0, 5) : null,
+        workMin: todayRes.work_minutes || 0
       };
     }
 
-    const shiftRes = await kintoneGet(APP_ID_SHIFTS, `line_uid = "${lineUid}" and shift_date >= "${startDate}" and shift_date <= "${endDate}" order by shift_date asc limit 100`);
+    const { data: shiftRes } = await supabase
+      .from('shifts')
+      .select('*')
+      .eq('line_uid', lineUid)
+      .gte('shift_date', startDate)
+      .lte('shift_date', endDate)
+      .order('shift_date', { ascending: true });
+      
     let shifts = [];
-    if (shiftRes.records) {
-      shifts = shiftRes.records.map(r => ({
-        date: r.shift_date.value,
-        type: r.shift_time.value
+    if (shiftRes) {
+      shifts = shiftRes.map(r => ({
+        date: r.shift_date,
+        type: r.shift_type
       }));
     }
 
@@ -458,16 +453,26 @@ app.post('/api/liff', async (req, res) => {
 
     let saved = 0;
     for (const e of entries) {
-      const existing = await kintoneGet(APP_ID_SHIFTS, `line_uid = "${lineUid}" and shift_date = "${e.date}" limit 1`);
-      if (existing.records && existing.records.length > 0) {
-        await kintonePut(APP_ID_SHIFTS, existing.records[0].$id.value, { shift_time: { value: e.type } });
+      const { data: existing } = await supabase
+        .from('shifts')
+        .select('id')
+        .eq('line_uid', lineUid)
+        .eq('shift_date', e.date)
+        .single();
+        
+      if (existing) {
+        await supabase
+          .from('shifts')
+          .update({ shift_type: e.type })
+          .eq('id', existing.id);
       } else {
-        await kintonePost(APP_ID_SHIFTS, {
-          line_uid: { value: lineUid },
-          name: { value: user.name },
-          shift_date: { value: e.date },
-          shift_time: { value: e.type }
-        });
+        await supabase
+          .from('shifts')
+          .insert([{
+            line_uid: lineUid,
+            shift_date: e.date,
+            shift_type: e.type
+          }]);
       }
       saved++;
     }

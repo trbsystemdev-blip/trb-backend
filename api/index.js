@@ -285,19 +285,12 @@ async function handleRegisterName(uid, text, replyToken) {
     return;
   }
   await supabase.from('users').update({ name: name }).eq('line_uid', uid);
-  await setUserState(uid, 'REGISTER_WAGE');
-  await replyToUser(replyToken, `お名前「${name}」を登録しました。\n\n次に時給を入力してください。\n例）1200`);
+  await setUserState(uid, 'REGISTER_ROLE');
+  await replyToUser(replyToken, `お名前「${name}」を登録しました。\n\n役職を入力してください。\n1. メインドライバー\n2. サブドライバー\n\n「1」または「2」を送信してください。`);
 }
 
 async function handleRegisterWage(uid, text, replyToken) {
-  const wage = parseInt(text.replace(/[^0-9]/g, ''));
-  if (isNaN(wage) || wage <= 0) {
-    await replyToUser(replyToken, '正しい時給を数字で入力してください。\n例）1200');
-    return;
-  }
-  await supabase.from('users').update({ hourly_wage: wage }).eq('line_uid', uid);
-  await setUserState(uid, 'REGISTER_ROLE');
-  await replyToUser(replyToken, `時給「${wage}円」を登録しました。\n\n役職を入力してください。\n1. メインドライバー\n2. サブドライバー\n\n「1」または「2」を送信してください。`);
+  // 管理者用（現在未使用）
 }
 
 async function handleRegisterRole(uid, text, replyToken) {
@@ -313,7 +306,7 @@ async function handleRegisterRole(uid, text, replyToken) {
   await supabase.from('users').update({ role: role }).eq('line_uid', uid);
   await setUserState(uid, '');
   const user = await getUserInfo(uid);
-  await replyToUser(replyToken, `【登録完了】\nお名前：${user.name}\n時給：${user.hourlyWage}円\n役職：${role}\n\n登録が完了しました！メニューから打刻を開始してください。`);
+  await replyToUser(replyToken, `【登録完了】\nお名前：${user.name}\n役職：${role}\n\n登録が完了しました！メニューから打刻を開始してください。\n※時給は管理者が設定します。`);
 }
 
 async function startReportFlow(uid, replyToken) {

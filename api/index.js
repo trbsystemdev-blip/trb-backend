@@ -216,6 +216,21 @@ async function handleTextMessage(uid, text, replyToken) {
     return;
   }
 
+  if (state === 'REGISTER_NAME') {
+    await handleRegisterName(uid, text, replyToken);
+    return;
+  }
+
+  if (state === 'REGISTER_WAGE') {
+    await handleRegisterWage(uid, text, replyToken);
+    return;
+  }
+
+  if (state === 'REGISTER_ROLE') {
+    await handleRegisterRole(uid, text, replyToken);
+    return;
+  }
+
   if (text === '雨天補償申請') {
     const record = await findTodayAttendance(uid);
     if (record) {
@@ -238,6 +253,12 @@ async function handleTextMessage(uid, text, replyToken) {
     return;
   }
 
+  if (text === '名前登録' || text === '登録') {
+    await setUserState(uid, 'REGISTER_NAME');
+    await replyToUser(replyToken, '【スタッフ登録】\nお名前を入力してください。\n例）山田 太郎');
+    return;
+  }
+
   if (text === '打刻') {
     await replyToUser(replyToken, '📍 位置情報を送信して打刻してください。\n\n画面下の「+」ボタン → 「位置情報」をタップしてください。');
     return;
@@ -254,6 +275,45 @@ async function handleTextMessage(uid, text, replyToken) {
   }
 
   await replyToUser(replyToken, 'メニューから操作してください。');
+}
+
+// --- スタッフ登録フロー ---
+async function handleRegisterName(uid, text, replyToken) {
+  const name = text.trim();
+  if (!name) {
+    await replyToUser(replyToken, 'お名前を入力してください。');
+    return;
+  }
+  await supabase.from('users').update({ name: name }).eq('line_uid', uid);
+  await setUserState(uid, 'REGISTER_WAGE');
+  await replyToUser(replyToken, `お名前「${name}」を登録しました。\n\n次に時給を入力してください。\n例）1200`);
+}
+
+async function handleRegisterWage(uid, text, replyToken) {
+  const wage = parseInt(text.replace(/[^0-9]/g, ''));
+  if (isNaN(wage) || wage <= 0) {
+    await replyToUser(replyToken, '正しい時給を数字で入力してください。\n例）1200');
+    return;
+  }
+  await supabase.from('users').update({ hourly_wage: wage }).eq('line_uid', uid);
+  await setUserState(uid, 'REGISTER_ROLE');
+  await replyToUser(replyToken, `時給「${wage}円」を登録しました。\n\n役職を入力してください。\n1. メインドライバー\n2. サブドライバー\n\n「1」または「2」を送信してください。`);
+}
+
+async function handleRegisterRole(uid, text, replyToken) {
+  let role = '';
+  if (text === '1' || text.includes('メイン')) {
+    role = 'メインドライバー';
+  } else if (text === '2' || text.includes('サブ')) {
+    role = 'サブドライバー';
+  } else {
+    await replyToUser(replyToken, '「1」（メインドライバー）または「2」（サブドライバー）を送信してください。');
+    return;
+  }
+  await supabase.from('users').update({ role: role }).eq('line_uid', uid);
+  await setUserState(uid, '');
+  const user = await getUserInfo(uid);
+  await replyToUser(replyToken, `【登録完了】\nお名前：${user.name}\n時給：${user.hourlyWage}円\n役職：${role}\n\n登録が完了しました！メニューから打刻を開始してください。`);
 }
 
 async function startReportFlow(uid, replyToken) {

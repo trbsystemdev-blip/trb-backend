@@ -310,9 +310,10 @@ async function handleRegisterRole(uid, text, replyToken) {
 }
 
 async function startReportFlow(uid, replyToken) {
+  // replyTokenの有効期限切れを防ぐため、返信を先に送る
+  await replyToUser(replyToken, '【日報入力】\n本日の主な業務内容を入力してください。\n\n例）ツアー運搬、レンタル運搬、両方、その他');
   await setUserState(uid, 'REPORT_1');
   tempCache[uid] = {};
-  await replyToUser(replyToken, '【日報入力】\n本日の主な業務内容を入力してください。\n\n例）ツアー運搬、レンタル運搬、両方、その他');
 }
 
 async function handleReportFlow(uid, text, replyToken) {
@@ -323,13 +324,13 @@ async function handleReportFlow(uid, text, replyToken) {
   if (state === 'REPORT_1') {
     data.taskType = text;
     tempCache[uid] = data;
-    await setUserState(uid, 'REPORT_2');
     await replyToUser(replyToken, '運搬した自転車の台数を入力してください。\n例）10台');
+    await setUserState(uid, 'REPORT_2');
   } else if (state === 'REPORT_2') {
     data.count = text;
     tempCache[uid] = data;
-    await setUserState(uid, 'REPORT_3');
     await replyToUser(replyToken, '特記事項・申し送り事項があれば入力してください。\nなければ「なし」と送信してください。');
+    await setUserState(uid, 'REPORT_3');
   } else if (state === 'REPORT_3') {
     data.note = text;
     await saveReport(uid, data, replyToken);
@@ -338,6 +339,9 @@ async function handleReportFlow(uid, text, replyToken) {
 
 async function saveReport(uid, data, replyToken) {
   const todayStr = format(toZonedTime(new Date(), 'Asia/Tokyo'), 'yyyy-MM-dd');
+
+  // replyTokenの有効期限切れを防ぐため、返信を先に送る
+  await replyToUser(replyToken, `【日報を保存しました】\n業務内容：${data.taskType}\n台数：${data.count}\n特記事項：${data.note}\n\nお疲れ様でした！`);
 
   const { error } = await supabase
     .from('reports')
@@ -353,7 +357,6 @@ async function saveReport(uid, data, replyToken) {
 
   await setUserState(uid, '');
   delete tempCache[uid];
-  await replyToUser(replyToken, `【日報を保存しました】\n業務内容：${data.taskType}\n台数：${data.count}\n特記事項：${data.note}\n\nお疲れ様でした！`);
 }
 
 // --- LINE 送信ユーティリティ ---

@@ -595,4 +595,214 @@ app.post('/api/liff', async (req, res) => {
   res.json({ success: false, error: 'Unknown action' });
 });
 
+// --- 管理者向けAPIエンドポイント ---
+// 簡易パスワード認証ミドルウェア
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'trb-admin-2024';
+function adminAuth(req, res, next) {
+  const pw = req.headers['x-admin-password'] || req.query.adminPassword;
+  if (pw !== ADMIN_PASSWORD) {
+    return res.status(401).json({ success: false, error: '認証エラー' });
+  }
+  next();
+}
+
+// スタッフ一覧取得
+app.get('/api/admin/users', adminAuth, async (req, res) => {
+  const { data, error } = await supabase
+    .from('users')
+    .select('*')
+    .order('name', { ascending: true });
+  if (error) return res.json({ success: false, error: error.message });
+  return res.json({ success: true, users: data });
+});
+
+// 時給更新
+app.post('/api/admin/updateWage', adminAuth, async (req, res) => {
+  const { lineUid, hourlyWage } = req.body;
+  if (!lineUid || hourlyWage === undefined) return res.json({ success: false, error: 'パラメータ不足' });
+  const { error } = await supabase
+    .from('users')
+    .update({ hourly_wage: parseInt(hourlyWage, 10) })
+    .eq('line_uid', lineUid);
+  if (error) return res.json({ success: false, error: error.message });
+  return res.json({ success: true });
+});
+
+// 勤怠一覧取得（月指定）
+app.get('/api/admin/attendance', adminAuth, async (req, res) => {
+  const { ym } = req.query;
+  if (!ym) return res.json({ success: false, error: 'ym is required' });
+  const year = ym.substring(0, 4);
+  const month = ym.substring(4, 6);
+  const startDate = `${year}-${month}-01`;
+  const endDate = `${year}-${month}-31`;
+
+  const { data: attData, error } = await supabase
+    .from('attendance')
+    .select('*')
+    .gte('date', startDate)
+    .lte('date', endDate)
+    .order('date', { ascending: true });
+  if (error) return res.json({ success: false, error: error.message });
+
+  const { data: usersData } = await supabase.from('users').select('line_uid, name, role, hourly_wage');
+  const userMap = {};
+  if (usersData) usersData.forEach(u => { userMap[u.line_uid] = u; });
+
+  const records = (attData || []).map(r => {
+    const u = userMap[r.line_uid] || {};
+    const wMin = r.work_minutes || 0;
+    const hourlyWage = u.hourly_wage || 0;
+    const basePay = Math.round((wMin / 60) * hourlyWage);
+    const penalty = r.penalty || 0;
+    const rain = r.rain_allowance || 0;
+    const transport = r.transportation || 0;
+    const dayPay = basePay + penalty + rain + transport;
+    return {
+      id: r.id,
+      date: r.date,
+      lineUid: r.line_uid,
+      name: u.name || r.line_uid,
+      role: u.role || '',
+      clockIn: r.clock_in ? r.clock_in.substring(0, 5) : '-',
+      clockOut: r.clock_out ? r.clock_out.substring(0, 5) : '-',
+      workMin: wMin,
+      workHours: wMin ? `${Math.floor(wMin/60)}h${wMin%60}m` : '-',
+      hourlyWage: hourlyWage,
+      basePay: basePay,
+      penalty: penalty,
+      rain: rain,
+      transport: transport,
+      dayPay: dayPay
+    };
+  });
+  return res.json({ success: true, records });
+});
+
+// シフト一覧取得（月指定）
+app.get('/api/admin/shifts', adminAuth, async (req, res) => {
+  const { ym } = req.query;
+  if (!ym) return res.json({ success: false, error: 'ym is required' });
+  const year = ym.substring(0, 4);
+  const month = ym.substring(4, 6);
+  const startDate = `${year}-${month}-01`;
+  const endDate = `${year}-${month}-31`;
+
+  const { data, error } = await supabase
+    .from('shifts')
+    .select('*')
+    .gte('shift_date', startDate)
+    .lte('shift_date', endDate)
+    .order('shift_date', { ascending: true });
+  if (error) return res.json({ success: false, error: error.message });
+
+  const { data: usersData } = await supabase.from('users').select('line_uid, name');
+  const userMap = {};
+  if (usersData) usersData.forEach(u => { userMap[u.line_uid] = u.name || u.line_uid; });
+
+  const records = (data || []).map(r => ({
+    id: r.id,
+    date: r.shift_date,
+    lineUid: r.line_uid,
+    name: userMap[r.line_uid] || r.line_uid,
+    type: r.shift_type
+  }));
+  return res.json({ success: true, records });
+});
+
+// 日報一覧取得（月指定）
+app.get('/api/admin/reports', adminAuth, async (req, res) => {
+  const { ym } = req.query;
+  if (!ym) return res.json({ success: false, error: 'ym is required' });
+  const year = ym.substring(0, 4);
+  const month = ym.substring(4, 6);
+  const startDate = `${year}-${month}-01`;
+  const endDate = `${year}-${month}-31`;
+
+  const { data, error } = await supabase
+    .from('reports')
+    .select('*')
+    .gte('date', startDate)
+    .lte('date', endDate)
+    .order('date', { ascending: true });
+  if (error) return res.json({ success: false, error: error.message });
+
+  const { data: usersData } = await supabase.from('users').select('line_uid, name');
+  const userMap = {};
+  if (usersData) usersData.forEach(u => { userMap[u.line_uid] = u.name || u.line_uid; });
+
+  const records = (data || []).map(r => ({
+    id: r.id,
+    date: r.date,
+    lineUid: r.line_uid,
+    name: userMap[r.line_uid] || r.line_uid,
+    taskType: r.task_type,
+    count: r.count,
+    note: r.note,
+    createdAt: r.created_at
+  }));
+  return res.json({ success: true, records });
+});
+
+// 月次集計（スタッフ別）
+app.get('/api/admin/monthly-summary', adminAuth, async (req, res) => {
+  const { ym } = req.query;
+  if (!ym) return res.json({ success: false, error: 'ym is required' });
+  const year = ym.substring(0, 4);
+  const month = ym.substring(4, 6);
+  const startDate = `${year}-${month}-01`;
+  const endDate = `${year}-${month}-31`;
+
+  const { data: attData } = await supabase
+    .from('attendance')
+    .select('*')
+    .gte('date', startDate)
+    .lte('date', endDate);
+
+  const { data: usersData } = await supabase.from('users').select('line_uid, name, role, hourly_wage');
+  const userMap = {};
+  if (usersData) usersData.forEach(u => { userMap[u.line_uid] = u; });
+
+  const summary = {};
+  (attData || []).forEach(r => {
+    const uid = r.line_uid;
+    if (!summary[uid]) {
+      const u = userMap[uid] || {};
+      summary[uid] = {
+        lineUid: uid,
+        name: u.name || uid,
+        role: u.role || '',
+        hourlyWage: u.hourly_wage || 0,
+        workDays: 0,
+        totalWorkMin: 0,
+        totalBasePay: 0,
+        totalPenalty: 0,
+        totalRain: 0,
+        totalTransport: 0,
+        totalPay: 0
+      };
+    }
+    const s = summary[uid];
+    const wMin = r.work_minutes || 0;
+    const basePay = Math.round((wMin / 60) * s.hourlyWage);
+    const penalty = r.penalty || 0;
+    const rain = r.rain_allowance || 0;
+    const transport = r.transportation || 0;
+    if (r.clock_in) s.workDays++;
+    s.totalWorkMin += wMin;
+    s.totalBasePay += basePay;
+    s.totalPenalty += penalty;
+    s.totalRain += rain;
+    s.totalTransport += transport;
+    s.totalPay += basePay + penalty + rain + transport;
+  });
+
+  const result = Object.values(summary).map(s => ({
+    ...s,
+    totalWorkHours: `${Math.floor(s.totalWorkMin/60)}時間${s.totalWorkMin%60}分`
+  }));
+
+  return res.json({ success: true, summary: result });
+});
+
 module.exports = app;

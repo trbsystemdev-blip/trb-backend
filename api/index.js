@@ -6,8 +6,23 @@ const { toZonedTime } = require('date-fns-tz');
 const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
-app.use(cors());
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 app.use(express.json());
+app.use(express.text({ type: 'text/plain' }));
+
+// text/plainで送られたJSONをパースするミドルウェア
+app.use((req, res, next) => {
+  if (req.headers['content-type'] === 'text/plain' && typeof req.body === 'string') {
+    try {
+      req.body = JSON.parse(req.body);
+    } catch (e) {}
+  }
+  next();
+});
 
 // --- 定数 ---
 const BREAK_MINUTES = 60;

@@ -211,6 +211,13 @@ async function handleTextMessage(uid, text, replyToken) {
   const user = await getUserInfo(uid);
   const state = user ? user.state : '';
 
+  // どのフロー中でも「キャンセル」でリセットできる
+  if (text === 'キャンセル' || text === 'cancel') {
+    await setUserState(uid, '');
+    await replyToUser(replyToken, '操作をキャンセルしました。メニューから操作してください。');
+    return;
+  }
+
   if (state && state.startsWith('REPORT_')) {
     await handleReportFlow(uid, text, replyToken);
     return;
@@ -290,7 +297,9 @@ async function handleRegisterName(uid, text, replyToken) {
 }
 
 async function handleRegisterWage(uid, text, replyToken) {
-  // 管理者用（現在未使用）
+  // このステートは現在未使用だが、万が一入った場合はリセットする
+  await setUserState(uid, '');
+  await replyToUser(replyToken, 'メニューから操作してください。');
 }
 
 async function handleRegisterRole(uid, text, replyToken) {

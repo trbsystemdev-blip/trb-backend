@@ -439,7 +439,8 @@ app.get('/api/liff', async (req, res) => {
     const year = ym.substring(0, 4);
     const month = ym.substring(4, 6);
     const startDate = `${year}-${month}-01`;
-    const endDate = `${year}-${month}-31`;
+    const lastDay = new Date(parseInt(year), parseInt(month), 0).getDate();
+    const endDate = `${year}-${month}-${String(lastDay).padStart(2, '0')}`;
 
     const { data: monthRes } = await supabase
       .from('attendance')
@@ -472,7 +473,7 @@ app.get('/api/liff', async (req, res) => {
           clockIn: r.clock_in ? r.clock_in.substring(0, 5) : null,
           clockOut: r.clock_out ? r.clock_out.substring(0, 5) : null,
           workMin: wMin,
-          workHours: wMin ? `${Math.floor(wMin/60)}h${wMin%60}m` : '-',
+          workHours: (wMin !== null && wMin !== undefined && wMin > 0) ? `${Math.floor(wMin/60)}h${wMin%60}m` : '-',
           penalty: penalty,
           rain: rain,
           transport: transport,
@@ -635,7 +636,8 @@ app.get('/api/admin/attendance', adminAuth, async (req, res) => {
   const year = ym.substring(0, 4);
   const month = ym.substring(4, 6);
   const startDate = `${year}-${month}-01`;
-  const endDate = `${year}-${month}-31`;
+  const lastDay = new Date(parseInt(year), parseInt(month), 0).getDate();
+  const endDate = `${year}-${month}-${String(lastDay).padStart(2, '0')}`;
 
   const { data: attData, error } = await supabase
     .from('attendance')
@@ -686,7 +688,8 @@ app.get('/api/admin/shifts', adminAuth, async (req, res) => {
   const year = ym.substring(0, 4);
   const month = ym.substring(4, 6);
   const startDate = `${year}-${month}-01`;
-  const endDate = `${year}-${month}-31`;
+  const lastDay = new Date(parseInt(year), parseInt(month), 0).getDate();
+  const endDate = `${year}-${month}-${String(lastDay).padStart(2, '0')}`;
 
   const { data, error } = await supabase
     .from('shifts')
@@ -717,7 +720,8 @@ app.get('/api/admin/reports', adminAuth, async (req, res) => {
   const year = ym.substring(0, 4);
   const month = ym.substring(4, 6);
   const startDate = `${year}-${month}-01`;
-  const endDate = `${year}-${month}-31`;
+  const lastDay = new Date(parseInt(year), parseInt(month), 0).getDate();
+  const endDate = `${year}-${month}-${String(lastDay).padStart(2, '0')}`;
 
   const { data, error } = await supabase
     .from('reports')
@@ -751,7 +755,8 @@ app.get('/api/admin/monthly-summary', adminAuth, async (req, res) => {
   const year = ym.substring(0, 4);
   const month = ym.substring(4, 6);
   const startDate = `${year}-${month}-01`;
-  const endDate = `${year}-${month}-31`;
+  const lastDay = new Date(parseInt(year), parseInt(month), 0).getDate();
+  const endDate = `${year}-${month}-${String(lastDay).padStart(2, '0')}`;
 
   const { data: attData } = await supabase
     .from('attendance')

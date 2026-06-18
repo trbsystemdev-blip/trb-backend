@@ -158,7 +158,8 @@ async function handleLocation(uid, lat, lng, replyToken) {
       const timeStr = format(roundedOut, 'HH:mm');
       const actualStr = format(now, 'HH:mm');
 
-      const inTime = record.clock_in;
+      // time型（HH:mm:ss）の場合も対応するため先頭5文字（HH:mm）のみ使用
+      const inTime = record.clock_in ? record.clock_in.substring(0, 5) : null;
       let workMin = 0;
       let pay = 0;
 

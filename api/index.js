@@ -650,7 +650,7 @@ app.post('/api/liff', async (req, res) => {
 // 簡易パスワード認証ミドルウェア
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'trb-admin-2024';
 function adminAuth(req, res, next) {
-  const pw = req.headers['x-admin-password'] || req.query.adminPassword;
+  const pw = req.headers['x-admin-password'] || req.query.adminPassword || (req.body && req.body.adminPassword);
   if (pw !== ADMIN_PASSWORD) {
     return res.status(401).json({ success: false, error: '認証エラー' });
   }

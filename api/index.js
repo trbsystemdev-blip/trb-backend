@@ -100,8 +100,8 @@ function roundTime(dateObj, isClockIn) {
     // 出勤は切り上げ（遅刻側負担：08:46→09:00）
     rounded.setMinutes(minutes + (ROUND_MINUTES - mod), 0, 0);
   } else {
-    // 退勤は切り上げ（スタッフ有利：17:14→17:30）
-    rounded.setMinutes(minutes + (ROUND_MINUTES - mod), 0, 0);
+    // 退勤は切り捨て（早退側負担：18:16→18:00）
+    rounded.setMinutes(minutes - mod, 0, 0);
   }
   return rounded;
 }

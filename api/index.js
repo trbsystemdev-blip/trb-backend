@@ -977,7 +977,10 @@ app.post('/api/admin/recalculate', adminAuth, async (req, res) => {
     const inDate = new Date(`${r.date}T${inTime}:00+09:00`);
     const outDate = new Date(`${r.date}T${outTime}:00+09:00`);
     if (isNaN(inDate) || isNaN(outDate)) continue;
-    const totalMin = Math.round((outDate - inDate) / 60000);
+    // 丸め処理を適用（出勤：切り上げ、退勤：切り捨て）
+    const roundedIn = roundTime(inDate, true);
+    const roundedOut = roundTime(outDate, false);
+    const totalMin = Math.round((roundedOut - roundedIn) / 60000);
     const workMin = Math.max(0, totalMin - BREAK_MINUTES);
     await supabase.from('attendance').update({ work_minutes: workMin }).eq('id', r.id);
     updated++;

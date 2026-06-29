@@ -140,6 +140,7 @@ async function handleLocation(uid, lat, lng, replyToken) {
           line_uid: uid,
           date: todayStr,
           clock_in: timeStr,
+          clock_in_raw: actualStr,
           break_minutes: BREAK_MINUTES,
           transportation: TRANSPORT_FEE,
           gps: gps
@@ -181,6 +182,7 @@ async function handleLocation(uid, lat, lng, replyToken) {
         .from('attendance')
         .update({
           clock_out: timeStr,
+          clock_out_raw: actualStr,
           work_minutes: workMin
         })
         .eq('id', record.id);
@@ -987,6 +989,59 @@ app.post('/api/admin/recalculate', adminAuth, async (req, res) => {
   }
 
   return res.json({ success: true, updated });
+});
+
+// 勤怠レコードの出退勤時刻を手修正（管理者操作）
+app.post('/api/admin/updateAttendance', adminAuth, async (req, res) => {
+  const { attendanceId, clockIn, clockOut } = req.body;
+  if (!attendanceId) return res.json({ success: false, error: 'attendanceId is required' });
+
+  // 現在のレコードを取得
+  const { data: rec, error: fetchErr } = await supabase
+    .from('attendance')
+    .select('*')
+    .eq('id', attendanceId)
+    .single();
+  if (fetchErr || !rec) return res.json({ success: false, error: 'record not found' });
+
+  const updates = {};
+
+  // 出勤時刻の更新
+  if (clockIn) {
+    const timeMatch = clockIn.match(/^(\d{1,2}):(\d{2})$/);
+    if (!timeMatch) return res.json({ success: false, error: '出勤時刻の形式が正しくありません（例：09:00）' });
+    const inDate = new Date(`${rec.date}T${clockIn.padStart(5,'0')}:00+09:00`);
+    const roundedIn = roundTime(inDate, true);
+    updates.clock_in = format(roundedIn, 'HH:mm');
+    updates.clock_in_raw = clockIn;
+  }
+
+  // 退勤時刻の更新
+  if (clockOut) {
+    const timeMatch = clockOut.match(/^(\d{1,2}):(\d{2})$/);
+    if (!timeMatch) return res.json({ success: false, error: '退勤時刻の形式が正しくありません（例：18:00）' });
+    const outDate = new Date(`${rec.date}T${clockOut.padStart(5,'0')}:00+09:00`);
+    const roundedOut = roundTime(outDate, false);
+    updates.clock_out = format(roundedOut, 'HH:mm');
+    updates.clock_out_raw = clockOut;
+  }
+
+  // work_minutesを再計算
+  const inTimeStr = (updates.clock_in || rec.clock_in || '').substring(0, 5);
+  const outTimeStr = (updates.clock_out || rec.clock_out || '').substring(0, 5);
+  if (inTimeStr && outTimeStr) {
+    const inDate = new Date(`${rec.date}T${inTimeStr}:00+09:00`);
+    const outDate = new Date(`${rec.date}T${outTimeStr}:00+09:00`);
+    if (!isNaN(inDate) && !isNaN(outDate)) {
+      const totalMin = Math.round((outDate - inDate) / 60000);
+      updates.work_minutes = Math.max(0, totalMin - BREAK_MINUTES);
+    }
+  }
+
+  const { error } = await supabase.from('attendance').update(updates).eq('id', attendanceId);
+  if (error) return res.json({ success: false, error: error.message });
+
+  return res.json({ success: true, updates });
 });
 
 // スタッフのstateをリセット（管理者操作）

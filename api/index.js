@@ -89,19 +89,19 @@ async function setUserState(uid, state) {
 }
 
 // --- 勤怠打刻ロジック ---
+// 出勤：切り上げ（遅刻側負担）例 08:46 → 09:00
+// 退勤：切り上げ（スタッフ有利）例 17:14 → 17:30
 function roundTime(dateObj, isClockIn) {
   const minutes = dateObj.getMinutes();
   const rounded = new Date(dateObj);
+  const mod = minutes % ROUND_MINUTES;
+  if (mod === 0) return rounded; // ちょうどの場合はそのまま
   if (isClockIn) {
-    const mod = minutes % ROUND_MINUTES;
-    if (mod <= ROUND_MINUTES) {
-      rounded.setMinutes(minutes - mod, 0, 0);
-    }
+    // 出勤は切り上げ（遅刻側負担：08:46→09:00）
+    rounded.setMinutes(minutes + (ROUND_MINUTES - mod), 0, 0);
   } else {
-    const mod = minutes % ROUND_MINUTES;
-    if (mod > 0) {
-      rounded.setMinutes(minutes + (ROUND_MINUTES - mod), 0, 0);
-    }
+    // 退勤は切り上げ（スタッフ有利：17:14→17:30）
+    rounded.setMinutes(minutes + (ROUND_MINUTES - mod), 0, 0);
   }
   return rounded;
 }
@@ -282,6 +282,13 @@ async function handleTextMessage(uid, text, replyToken) {
     return;
   }
 
+  // 退勤後申告（例：「退勤申告 18:30」）
+  const clockOutMatch = text.match(/^退勤申告\s*(\d{1,2}:\d{2})/);
+  if (clockOutMatch) {
+    await handleClockOutRequest(uid, clockOutMatch[1], replyToken);
+    return;
+  }
+
   await replyToUser(replyToken, 'メニューから操作してください。');
 }
 
@@ -317,6 +324,46 @@ async function handleRegisterRole(uid, text, replyToken) {
   await setUserState(uid, '');
   const user = await getUserInfo(uid);
   await replyToUser(replyToken, `【登録完了】\nお名前：${user.name}\n役職：${role}\n\n登録が完了しました！メニューから打刻を開始してください。\n※時給は管理者が設定します。`);
+}
+
+// --- 退勤後申告フロー ---
+async function handleClockOutRequest(uid, timeStr, replyToken) {
+  const user = await getUserInfo(uid);
+  const record = await findTodayAttendance(uid);
+  
+  if (!record) {
+    await replyToUser(replyToken, '本日の出勤記録がありません。先に出勤打刻をしてください。');
+    return;
+  }
+  if (record.clock_out) {
+    await replyToUser(replyToken, `本日の退勤時刻はすでに記録されています（${record.clock_out.substring(0,5)}）。`);
+    return;
+  }
+
+  // 時刻バリデーション
+  const timeMatch = timeStr.match(/^(\d{1,2}):(\d{2})$/);
+  if (!timeMatch) {
+    await replyToUser(replyToken, '時刻の形式が正しくありません。例）退勤申告 18:30');
+    return;
+  }
+
+  // 承認待ちレコードとして保存
+  const { error } = await supabase
+    .from('attendance')
+    .update({
+      pending_clock_out: timeStr,
+      pending_reason: '後申告'
+    })
+    .eq('id', record.id);
+
+  if (error) {
+    console.error('handleClockOutRequest error:', error);
+    await replyToUser(replyToken, 'エラーが発生しました。管理者に連絡してください。');
+    return;
+  }
+
+  await replyToUser(replyToken, `退勤後申告（${timeStr}）を受付けました。
+管理者の承認待ちとなります。承認後に退勤時刻が確定されます。`);
 }
 
 async function startReportFlow(uid, replyToken) {
@@ -809,6 +856,143 @@ app.get('/api/admin/monthly-summary', adminAuth, async (req, res) => {
   }));
 
   return res.json({ success: true, summary: result });
+});
+
+// 承認待ち退勤申告一覧取得
+app.get('/api/admin/pending', adminAuth, async (req, res) => {
+  const { data, error } = await supabase
+    .from('attendance')
+    .select('*')
+    .not('pending_clock_out', 'is', null)
+    .is('clock_out', null)
+    .order('date', { ascending: false });
+  if (error) return res.json({ success: false, error: error.message });
+
+  const { data: usersData } = await supabase.from('users').select('line_uid, name');
+  const userMap = {};
+  if (usersData) usersData.forEach(u => { userMap[u.line_uid] = u.name || u.line_uid; });
+
+  const records = (data || []).map(r => ({
+    id: r.id,
+    date: r.date,
+    lineUid: r.line_uid,
+    name: userMap[r.line_uid] || r.line_uid,
+    clockIn: r.clock_in ? r.clock_in.substring(0, 5) : '-',
+    pendingClockOut: r.pending_clock_out,
+    pendingReason: r.pending_reason || '後申告'
+  }));
+  return res.json({ success: true, records });
+});
+
+// 退勤後申告を承認
+app.post('/api/admin/approveClockOut', adminAuth, async (req, res) => {
+  const { attendanceId } = req.body;
+  if (!attendanceId) return res.json({ success: false, error: 'attendanceId is required' });
+
+  const { data: rec, error: fetchErr } = await supabase
+    .from('attendance')
+    .select('*')
+    .eq('id', attendanceId)
+    .single();
+  if (fetchErr || !rec) return res.json({ success: false, error: 'レコードが見つかりません' });
+
+  const inTime = rec.clock_in ? rec.clock_in.substring(0, 5) : null;
+  const outTime = rec.pending_clock_out;
+  let workMin = 0;
+  if (inTime && outTime) {
+    const inDate = new Date(`${rec.date}T${inTime}:00+09:00`);
+    const outDate = new Date(`${rec.date}T${outTime}:00+09:00`);
+    const totalMin = Math.round((outDate - inDate) / 60000);
+    workMin = Math.max(0, totalMin - BREAK_MINUTES);
+  }
+
+  const { error } = await supabase
+    .from('attendance')
+    .update({
+      clock_out: outTime,
+      work_minutes: workMin,
+      pending_clock_out: null,
+      pending_reason: null
+    })
+    .eq('id', attendanceId);
+  if (error) return res.json({ success: false, error: error.message });
+
+  // スタッフにLINE通知
+  try {
+    const { data: user } = await supabase.from('users').select('name').eq('line_uid', rec.line_uid).single();
+    const name = user ? user.name : rec.line_uid;
+    const workH = Math.floor(workMin / 60);
+    const workM = workMin % 60;
+    await pushToUser(rec.line_uid, `【退勤承認】${name}さん
+退勤時刻：${outTime}（管理者承認済）
+実労働：${workH}時間${workM}分（休憩1時間自動控除）`);
+  } catch(e) {}
+
+  return res.json({ success: true, workMin });
+});
+
+// 退勤後申告を却下
+app.post('/api/admin/rejectClockOut', adminAuth, async (req, res) => {
+  const { attendanceId } = req.body;
+  if (!attendanceId) return res.json({ success: false, error: 'attendanceId is required' });
+
+  const { data: rec } = await supabase.from('attendance').select('line_uid, pending_clock_out').eq('id', attendanceId).single();
+
+  const { error } = await supabase
+    .from('attendance')
+    .update({ pending_clock_out: null, pending_reason: null })
+    .eq('id', attendanceId);
+  if (error) return res.json({ success: false, error: error.message });
+
+  // スタッフにLINE通知
+  try {
+    if (rec) await pushToUser(rec.line_uid, `【退勤申告却下】退勤後申告（${rec.pending_clock_out}）は却下されました。管理者にお問い合わせください。`);
+  } catch(e) {}
+
+  return res.json({ success: true });
+});
+
+// 過去データの勤務時間を再計算（時給変更後に使用）
+app.post('/api/admin/recalculate', adminAuth, async (req, res) => {
+  const { ym } = req.body;
+  if (!ym) return res.json({ success: false, error: 'ym is required' });
+  const year = ym.substring(0, 4);
+  const month = ym.substring(4, 6);
+  const startDate = `${year}-${month}-01`;
+  const lastDay = new Date(parseInt(year), parseInt(month), 0).getDate();
+  const endDate = `${year}-${month}-${String(lastDay).padStart(2, '0')}`;
+
+  const { data: attData, error } = await supabase
+    .from('attendance')
+    .select('*')
+    .gte('date', startDate)
+    .lte('date', endDate);
+  if (error) return res.json({ success: false, error: error.message });
+
+  let updated = 0;
+  for (const r of (attData || [])) {
+    if (!r.clock_in || !r.clock_out) continue;
+    const inTime = r.clock_in.substring(0, 5);
+    const outTime = r.clock_out.substring(0, 5);
+    const inDate = new Date(`${r.date}T${inTime}:00+09:00`);
+    const outDate = new Date(`${r.date}T${outTime}:00+09:00`);
+    if (isNaN(inDate) || isNaN(outDate)) continue;
+    const totalMin = Math.round((outDate - inDate) / 60000);
+    const workMin = Math.max(0, totalMin - BREAK_MINUTES);
+    await supabase.from('attendance').update({ work_minutes: workMin }).eq('id', r.id);
+    updated++;
+  }
+
+  return res.json({ success: true, updated });
+});
+
+// スタッフのstateをリセット（管理者操作）
+app.post('/api/admin/resetState', adminAuth, async (req, res) => {
+  const { lineUid } = req.body;
+  if (!lineUid) return res.json({ success: false, error: 'lineUid is required' });
+  const { error } = await supabase.from('users').update({ state: '' }).eq('line_uid', lineUid);
+  if (error) return res.json({ success: false, error: error.message });
+  return res.json({ success: true });
 });
 
 module.exports = app;

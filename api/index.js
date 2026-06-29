@@ -27,6 +27,19 @@ app.use((req, res, next) => {
 // --- 定数 ---
 const BREAK_MINUTES = 60;
 const ROUND_MINUTES = 30;
+
+// ymパラメータのパース（"202606" または "2026-06" 両方対応）
+function parseYm(ym) {
+  if (!ym) return null;
+  const clean = ym.replace(/-/g, ''); // ハイフン除去
+  if (clean.length !== 6) return null;
+  const year = clean.substring(0, 4);
+  const month = clean.substring(4, 6);
+  const startDate = `${year}-${month}-01`;
+  const lastDay = new Date(parseInt(year), parseInt(month), 0).getDate();
+  const endDate = `${year}-${month}-${String(lastDay).padStart(2, '0')}`;
+  return { year, month, startDate, endDate };
+}
 const LATE_PENALTY = -500;
 const RAIN_ALLOWANCE = 3000;
 const TRANSPORT_FEE = 500;
@@ -682,12 +695,9 @@ app.post('/api/admin/updateWage', adminAuth, async (req, res) => {
 // 勤怠一覧取得（月指定）
 app.get('/api/admin/attendance', adminAuth, async (req, res) => {
   const { ym } = req.query;
-  if (!ym) return res.json({ success: false, error: 'ym is required' });
-  const year = ym.substring(0, 4);
-  const month = ym.substring(4, 6);
-  const startDate = `${year}-${month}-01`;
-  const lastDay = new Date(parseInt(year), parseInt(month), 0).getDate();
-  const endDate = `${year}-${month}-${String(lastDay).padStart(2, '0')}`;
+  const parsed = parseYm(ym);
+  if (!parsed) return res.json({ success: false, error: 'ym is required (format: 2026-06 or 202606)' });
+  const { year, month, startDate, endDate } = parsed;
 
   const { data: attData, error } = await supabase
     .from('attendance')
@@ -734,12 +744,9 @@ app.get('/api/admin/attendance', adminAuth, async (req, res) => {
 // シフト一覧取得（月指定）
 app.get('/api/admin/shifts', adminAuth, async (req, res) => {
   const { ym } = req.query;
-  if (!ym) return res.json({ success: false, error: 'ym is required' });
-  const year = ym.substring(0, 4);
-  const month = ym.substring(4, 6);
-  const startDate = `${year}-${month}-01`;
-  const lastDay = new Date(parseInt(year), parseInt(month), 0).getDate();
-  const endDate = `${year}-${month}-${String(lastDay).padStart(2, '0')}`;
+  const parsed = parseYm(ym);
+  if (!parsed) return res.json({ success: false, error: 'ym is required (format: 2026-06 or 202606)' });
+  const { year, month, startDate, endDate } = parsed;
 
   const { data, error } = await supabase
     .from('shifts')
@@ -766,12 +773,9 @@ app.get('/api/admin/shifts', adminAuth, async (req, res) => {
 // 日報一覧取得（月指定）
 app.get('/api/admin/reports', adminAuth, async (req, res) => {
   const { ym } = req.query;
-  if (!ym) return res.json({ success: false, error: 'ym is required' });
-  const year = ym.substring(0, 4);
-  const month = ym.substring(4, 6);
-  const startDate = `${year}-${month}-01`;
-  const lastDay = new Date(parseInt(year), parseInt(month), 0).getDate();
-  const endDate = `${year}-${month}-${String(lastDay).padStart(2, '0')}`;
+  const parsed = parseYm(ym);
+  if (!parsed) return res.json({ success: false, error: 'ym is required (format: 2026-06 or 202606)' });
+  const { year, month, startDate, endDate } = parsed;
 
   const { data, error } = await supabase
     .from('reports')
@@ -801,12 +805,9 @@ app.get('/api/admin/reports', adminAuth, async (req, res) => {
 // 月次集計（スタッフ別）
 app.get('/api/admin/monthly-summary', adminAuth, async (req, res) => {
   const { ym } = req.query;
-  if (!ym) return res.json({ success: false, error: 'ym is required' });
-  const year = ym.substring(0, 4);
-  const month = ym.substring(4, 6);
-  const startDate = `${year}-${month}-01`;
-  const lastDay = new Date(parseInt(year), parseInt(month), 0).getDate();
-  const endDate = `${year}-${month}-${String(lastDay).padStart(2, '0')}`;
+  const parsed = parseYm(ym);
+  if (!parsed) return res.json({ success: false, error: 'ym is required (format: 2026-06 or 202606)' });
+  const { year, month, startDate, endDate } = parsed;
 
   const { data: attData } = await supabase
     .from('attendance')
@@ -957,12 +958,9 @@ app.post('/api/admin/rejectClockOut', adminAuth, async (req, res) => {
 // 過去データの勤務時間を再計算（時給変更後に使用）
 app.post('/api/admin/recalculate', adminAuth, async (req, res) => {
   const { ym } = req.body;
-  if (!ym) return res.json({ success: false, error: 'ym is required' });
-  const year = ym.substring(0, 4);
-  const month = ym.substring(4, 6);
-  const startDate = `${year}-${month}-01`;
-  const lastDay = new Date(parseInt(year), parseInt(month), 0).getDate();
-  const endDate = `${year}-${month}-${String(lastDay).padStart(2, '0')}`;
+  const parsed = parseYm(ym);
+  if (!parsed) return res.json({ success: false, error: 'ym is required (format: 2026-06 or 202606)' });
+  const { year, month, startDate, endDate } = parsed;
 
   const { data: attData, error } = await supabase
     .from('attendance')

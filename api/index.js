@@ -1006,13 +1006,15 @@ app.post('/api/admin/updateAttendance', adminAuth, async (req, res) => {
 
   const updates = {};
 
+  const TZ = 'Asia/Tokyo';
+
   // 出勤時刻の更新
   if (clockIn) {
     const timeMatch = clockIn.match(/^(\d{1,2}):(\d{2})$/);
     if (!timeMatch) return res.json({ success: false, error: '出勤時刻の形式が正しくありません（例：09:00）' });
     const inDate = new Date(`${rec.date}T${clockIn.padStart(5,'0')}:00+09:00`);
     const roundedIn = roundTime(inDate, true);
-    updates.clock_in = format(roundedIn, 'HH:mm');
+    updates.clock_in = format(toZonedTime(roundedIn, TZ), 'HH:mm');
     updates.clock_in_raw = clockIn;
   }
 
@@ -1022,7 +1024,7 @@ app.post('/api/admin/updateAttendance', adminAuth, async (req, res) => {
     if (!timeMatch) return res.json({ success: false, error: '退勤時刻の形式が正しくありません（例：18:00）' });
     const outDate = new Date(`${rec.date}T${clockOut.padStart(5,'0')}:00+09:00`);
     const roundedOut = roundTime(outDate, false);
-    updates.clock_out = format(roundedOut, 'HH:mm');
+    updates.clock_out = format(toZonedTime(roundedOut, TZ), 'HH:mm');
     updates.clock_out_raw = clockOut;
   }
 

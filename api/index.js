@@ -304,6 +304,13 @@ async function handleTextMessage(uid, text, replyToken) {
     return;
   }
 
+  // 出勤後申告（例：「出勤申告 09:00」）
+  const clockInMatch = text.match(/^出勤申告\s*(\d{1,2}:\d{2})/);
+  if (clockInMatch) {
+    await handleClockInRequest(uid, clockInMatch[1], replyToken);
+    return;
+  }
+
   await replyToUser(replyToken, 'メニューから操作してください。');
 }
 
@@ -339,6 +346,58 @@ async function handleRegisterRole(uid, text, replyToken) {
   await setUserState(uid, '');
   const user = await getUserInfo(uid);
   await replyToUser(replyToken, `【登録完了】\nお名前：${user.name}\n役職：${role}\n\n登録が完了しました！メニューから打刻を開始してください。\n※時給は管理者が設定します。`);
+}
+
+// --- 出勤後申告フロー ---
+async function handleClockInRequest(uid, timeStr, replyToken) {
+  await ensureUserExists(uid);
+  const user = await getUserInfo(uid);
+  const record = await findTodayAttendance(uid);
+
+  if (record && record.clock_in) {
+    await replyToUser(replyToken, `本日の出勤時刻はすでに記録されています（${record.clock_in.substring(0,5)}）。`);
+    return;
+  }
+
+  // 時刻バリデーション
+  const timeMatch = timeStr.match(/^(\d{1,2}):(\d{2})$/);
+  if (!timeMatch) {
+    await replyToUser(replyToken, '時刻の形式が正しくありません。例）出勤申告 09:00');
+    return;
+  }
+
+  if (record) {
+    // 既存レコード（出勤なし）に pending_clock_in を保存
+    const { error } = await supabase
+      .from('attendance')
+      .update({ pending_clock_in: timeStr })
+      .eq('id', record.id);
+    if (error) {
+      console.error('handleClockInRequest update error:', error);
+      await replyToUser(replyToken, 'エラーが発生しました。管理者に連絡してください。');
+      return;
+    }
+  } else {
+    // 当日レコードがない場合は新規作成
+    const today = format(toZonedTime(new Date(), 'Asia/Tokyo'), 'yyyy-MM-dd');
+    const { error } = await supabase
+      .from('attendance')
+      .insert([{
+        line_uid: uid,
+        date: today,
+        pending_clock_in: timeStr,
+        break_minutes: BREAK_MINUTES,
+        transportation: TRANSPORT_FEE
+      }]);
+    if (error) {
+      console.error('handleClockInRequest insert error:', error);
+      await replyToUser(replyToken, 'エラーが発生しました。管理者に連絡してください。');
+      return;
+    }
+  }
+
+  await replyToUser(replyToken, `出勤後申告（${timeStr}）を受付けました。
+管理者の承認待ちとなります。承認後に出勤時刻が確定されます。`);
 }
 
 // --- 退勤後申告フロー ---
@@ -861,30 +920,130 @@ app.get('/api/admin/monthly-summary', adminAuth, async (req, res) => {
   return res.json({ success: true, summary: result });
 });
 
-// 承認待ち退勤申告一覧取得
+// 承認待き申告一覧取得（出勤申告・退勤申告の両方）
 app.get('/api/admin/pending', adminAuth, async (req, res) => {
-  const { data, error } = await supabase
+  // 退勤申告待ち
+  const { data: outData, error: outErr } = await supabase
     .from('attendance')
     .select('*')
     .not('pending_clock_out', 'is', null)
     .is('clock_out', null)
     .order('date', { ascending: false });
-  if (error) return res.json({ success: false, error: error.message });
+  if (outErr) return res.json({ success: false, error: outErr.message });
+
+  // 出勤申告待ち
+  const { data: inData, error: inErr } = await supabase
+    .from('attendance')
+    .select('*')
+    .not('pending_clock_in', 'is', null)
+    .is('clock_in', null)
+    .order('date', { ascending: false });
+  if (inErr) return res.json({ success: false, error: inErr.message });
 
   const { data: usersData } = await supabase.from('users').select('line_uid, name');
   const userMap = {};
   if (usersData) usersData.forEach(u => { userMap[u.line_uid] = u.name || u.line_uid; });
 
-  const records = (data || []).map(r => ({
+  const outRecords = (outData || []).map(r => ({
     id: r.id,
     date: r.date,
     lineUid: r.line_uid,
     name: userMap[r.line_uid] || r.line_uid,
+    type: 'clockOut',
     clockIn: r.clock_in ? r.clock_in.substring(0, 5) : '-',
+    clockOut: r.clock_out ? r.clock_out.substring(0, 5) : '-',
     pendingClockOut: r.pending_clock_out,
+    pendingClockIn: null,
     pendingReason: r.pending_reason || '後申告'
   }));
+
+  const inRecords = (inData || []).map(r => ({
+    id: r.id,
+    date: r.date,
+    lineUid: r.line_uid,
+    name: userMap[r.line_uid] || r.line_uid,
+    type: 'clockIn',
+    clockIn: '-',
+    clockOut: r.clock_out ? r.clock_out.substring(0, 5) : '-',
+    pendingClockOut: null,
+    pendingClockIn: r.pending_clock_in,
+    pendingReason: '出勤後申告'
+  }));
+
+  // 日付降順でマージ
+  const records = [...outRecords, ...inRecords].sort((a, b) => b.date.localeCompare(a.date));
   return res.json({ success: true, records });
+});
+
+// 出勤後申告を承認
+app.post('/api/admin/approveClockIn', adminAuth, async (req, res) => {
+  const { attendanceId } = req.body;
+  if (!attendanceId) return res.json({ success: false, error: 'attendanceId is required' });
+
+  const { data: rec, error: fetchErr } = await supabase
+    .from('attendance')
+    .select('*')
+    .eq('id', attendanceId)
+    .single();
+  if (fetchErr || !rec) return res.json({ success: false, error: 'レコードが見つかりません' });
+
+  const TZ = 'Asia/Tokyo';
+  const pendingIn = rec.pending_clock_in;
+  const inDate = new Date(`${rec.date}T${pendingIn.padStart(5,'0')}:00+09:00`);
+  const roundedIn = roundTime(inDate, true);
+  const clockInStr = format(toZonedTime(roundedIn, TZ), 'HH:mm');
+
+  // work_minutesは退勤も揃っている場合のみ計算
+  let workMin = 0;
+  const outTime = rec.clock_out ? rec.clock_out.substring(0, 5) : null;
+  if (outTime) {
+    const outDate = new Date(`${rec.date}T${outTime}:00+09:00`);
+    const totalMin = Math.round((outDate - roundedIn) / 60000);
+    workMin = Math.max(0, totalMin - BREAK_MINUTES);
+  }
+
+  const updateData = {
+    clock_in: clockInStr,
+    clock_in_raw: pendingIn,
+    pending_clock_in: null
+  };
+  if (outTime) updateData.work_minutes = workMin;
+
+  const { error } = await supabase
+    .from('attendance')
+    .update(updateData)
+    .eq('id', attendanceId);
+  if (error) return res.json({ success: false, error: error.message });
+
+  // スタッフにLINE通知
+  try {
+    const { data: user } = await supabase.from('users').select('name').eq('line_uid', rec.line_uid).single();
+    const name = user ? user.name : rec.line_uid;
+    await pushToUser(rec.line_uid, `【出勤承認】${name}さん
+出勤時刻：${pendingIn} → 見なし時刻：${clockInStr}（管理者承認済）`);
+  } catch(e) {}
+
+  return res.json({ success: true, clockIn: clockInStr });
+});
+
+// 出勤後申告を却下
+app.post('/api/admin/rejectClockIn', adminAuth, async (req, res) => {
+  const { attendanceId } = req.body;
+  if (!attendanceId) return res.json({ success: false, error: 'attendanceId is required' });
+
+  const { data: rec } = await supabase.from('attendance').select('line_uid, pending_clock_in').eq('id', attendanceId).single();
+
+  const { error } = await supabase
+    .from('attendance')
+    .update({ pending_clock_in: null })
+    .eq('id', attendanceId);
+  if (error) return res.json({ success: false, error: error.message });
+
+  try {
+    if (rec) await pushToUser(rec.line_uid, `【出勤申告却下】出勤後申告（${rec.pending_clock_in}）は却下されました。管理者にお問い合わせください。`);
+  } catch(e) {}
+
+  return res.json({ success: true });
 });
 
 // 退勤後申告を承認

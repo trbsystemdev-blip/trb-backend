@@ -205,8 +205,8 @@ async function handleLocation(uid, lat, lng, replyToken) {
       const workH = Math.floor(workMin / 60);
       const workM = workMin % 60;
       let msg = `《退勤》${user.name}さん\n打刻時刻：${actualStr}`;
-      if (actualStr !== timeStr) msg += `\n見なし時刻：${timeStr}（前後${ROUND_MINUTES}分見なし）`;
-      msg += `\n実労働：${workH}時間${workM}分（休憩1時間自動控除）`;
+      if (actualStr !== timeStr) msg += `\n見なし時刻：${timeStr}（切り捨て）`;
+      msg += `\n実労働：${workH}時間${workM}分（休憩⁠1時間自動控除）`;
       if (user.hourlyWage > 0) msg += `\n本日の給与目安：${pay.toLocaleString()}円`;
       msg += `\n\n退勤しました。「日報」ボタンから日報を入力してください。`;
       await replyToUser(replyToken, msg);
@@ -254,24 +254,13 @@ async function handleTextMessage(uid, text, replyToken) {
     return;
   }
 
-  if (text === '雨天補償申請') {
+  if (text === 'リザーブ申請' || text === '雨天補償申請') {
     const record = await findTodayAttendance(uid);
     if (record) {
       await supabase.from('attendance').update({ rain_allowance: RAIN_ALLOWANCE }).eq('id', record.id);
-      await replyToUser(replyToken, `${user.name}さん、雨天補償（${RAIN_ALLOWANCE}円）を記録しました。`);
+      await replyToUser(replyToken, `${user.name}さん、リザーブ手当（${RAIN_ALLOWANCE}円）を記録しました。`);
     } else {
       await replyToUser(replyToken, '本日の出勤記録がありません。先に出勤打刻をしてください。');
-    }
-    return;
-  }
-
-  if (text === '遅刻申告') {
-    const record = await findTodayAttendance(uid);
-    if (record) {
-      await supabase.from('attendance').update({ penalty: LATE_PENALTY }).eq('id', record.id);
-      await replyToUser(replyToken, `${user.name}さん、遅刻ペナルティ（${LATE_PENALTY}円）を記録しました。`);
-    } else {
-      await replyToUser(replyToken, '本日の出勤記録がありません。');
     }
     return;
   }

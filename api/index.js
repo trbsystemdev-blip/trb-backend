@@ -26,6 +26,13 @@ app.use((req, res, next) => {
 
 // --- 定数 ---
 const BREAK_MINUTES = 60;
+const BREAK_THRESHOLD_MINUTES = 360; // 6時間超のみ休憩控除
+
+// 実稼働時間計算：6時間以下は休憩控除なし、6時間超は60分控除
+function calcWorkMin(totalMin) {
+  if (totalMin <= BREAK_THRESHOLD_MINUTES) return Math.max(0, totalMin);
+  return Math.max(0, totalMin - BREAK_MINUTES);
+}
 const ROUND_MINUTES = 30;
 
 // ymパラメータのパース（"202606" または "2026-06" 両方対応）
@@ -181,7 +188,7 @@ async function handleLocation(uid, lat, lng, replyToken) {
         const inDate = new Date(`${todayStr}T${inTime}:00+09:00`);
         const outDate = new Date(`${todayStr}T${timeStr}:00+09:00`);
         const totalMin = Math.round((outDate - inDate) / 60000);
-        workMin = Math.max(0, totalMin - BREAK_MINUTES);
+        workMin = calcWorkMin(totalMin);
 
         const hourlyWage = user.hourlyWage || 0;
         const basePay = Math.round((workMin / 60) * hourlyWage);
@@ -988,7 +995,7 @@ app.post('/api/admin/approveClockIn', adminAuth, async (req, res) => {
   if (outTime) {
     const outDate = new Date(`${rec.date}T${outTime}:00+09:00`);
     const totalMin = Math.round((outDate - roundedIn) / 60000);
-    workMin = Math.max(0, totalMin - BREAK_MINUTES);
+    workMin = calcWorkMin(totalMin);
   }
 
   const updateData = {
@@ -1054,7 +1061,7 @@ app.post('/api/admin/approveClockOut', adminAuth, async (req, res) => {
     const inDate = new Date(`${rec.date}T${inTime}:00+09:00`);
     const outDate = new Date(`${rec.date}T${outTime}:00+09:00`);
     const totalMin = Math.round((outDate - inDate) / 60000);
-    workMin = Math.max(0, totalMin - BREAK_MINUTES);
+    workMin = calcWorkMin(totalMin);
   }
 
   const { error } = await supabase
@@ -1129,7 +1136,7 @@ app.post('/api/admin/recalculate', adminAuth, async (req, res) => {
     const roundedIn = roundTime(inDate, true);
     const roundedOut = roundTime(outDate, false);
     const totalMin = Math.round((roundedOut - roundedIn) / 60000);
-    const workMin = Math.max(0, totalMin - BREAK_MINUTES);
+    const workMin = calcWorkMin(totalMin);
     await supabase.from('attendance').update({ work_minutes: workMin }).eq('id', r.id);
     updated++;
   }
@@ -1182,7 +1189,7 @@ app.post('/api/admin/updateAttendance', adminAuth, async (req, res) => {
     const outDate = new Date(`${rec.date}T${outTimeStr}:00+09:00`);
     if (!isNaN(inDate) && !isNaN(outDate)) {
       const totalMin = Math.round((outDate - inDate) / 60000);
-      updates.work_minutes = Math.max(0, totalMin - BREAK_MINUTES);
+      updates.work_minutes = calcWorkMin(totalMin);
     }
   }
 

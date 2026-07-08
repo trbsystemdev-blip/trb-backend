@@ -183,11 +183,12 @@ async function handleLocation(uid, lat, lng, replyToken) {
       const inTime = record.clock_in ? record.clock_in.substring(0, 5) : null;
       let workMin = 0;
       let pay = 0;
+      let totalMin = 0;
 
       if (inTime) {
         const inDate = new Date(`${todayStr}T${inTime}:00+09:00`);
         const outDate = new Date(`${todayStr}T${timeStr}:00+09:00`);
-        const totalMin = Math.round((outDate - inDate) / 60000);
+        totalMin = Math.round((outDate - inDate) / 60000);
         workMin = calcWorkMin(totalMin);
 
         const hourlyWage = user.hourlyWage || 0;
@@ -211,9 +212,10 @@ async function handleLocation(uid, lat, lng, replyToken) {
 
       const workH = Math.floor(workMin / 60);
       const workM = workMin % 60;
+      const breakNote = totalMin > BREAK_THRESHOLD_MINUTES ? '（休憩１時間自動控除）' : '（休憩控除なし）';
       let msg = `《退勤》${user.name}さん\n打刻時刻：${actualStr}`;
       if (actualStr !== timeStr) msg += `\n見なし時刻：${timeStr}（切り捨て）`;
-      msg += `\n実労働：${workH}時間${workM}分（休憩⁠1時間自動控除）`;
+      msg += `\n実労働：${workH}時間${workM}分${breakNote}`;
       if (user.hourlyWage > 0) msg += `\n本日の給与目安：${pay.toLocaleString()}円`;
       msg += `\n\n退勤しました。「日報」ボタンから日報を入力してください。`;
       await replyToUser(replyToken, msg);

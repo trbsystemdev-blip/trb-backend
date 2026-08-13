@@ -173,6 +173,9 @@ async function handleLocation(uid, lat, lng, replyToken) {
       msg += `\n交通費：${TRANSPORT_FEE}円 ✅`;
       await replyToUser(replyToken, msg);
 
+    } else if (record.reserve_only) {
+      await replyToUser(replyToken, '本日はリザーブ手当のみの申請日として登録されています。出勤・退勤の打刻はできません。勤務することになった場合は、管理者に連絡してください。');
+
     } else if (!record.clock_out) {
       // 退勤
       const roundedOut = roundTime(now, false);
@@ -265,12 +268,37 @@ async function handleTextMessage(uid, text, replyToken) {
 
   if (text === 'リザーブ申請' || text === '雨天補償申請') {
     const record = await findTodayAttendance(uid);
-    if (record) {
-      await supabase.from('attendance').update({ rain_allowance: RAIN_ALLOWANCE }).eq('id', record.id);
-      await replyToUser(replyToken, `${user.name}さん、リザーブ手当（${RAIN_ALLOWANCE}円）を記録しました。`);
-    } else {
-      await replyToUser(replyToken, '本日の出勤記録がありません。先に出勤打刻をしてください。');
+
+    // リザーブ手当は、業務中止日に出勤せず単独で申請できる。
+    // 出勤済みの勤務日には誤って重複申請しないよう、管理者確認を案内する。
+    if (record && !record.reserve_only) {
+      await replyToUser(replyToken, '本日は出勤または勤怠申告の記録があります。リザーブ手当の追加が必要な場合は、管理者に連絡してください。');
+      return;
     }
+
+    if (record && record.reserve_only) {
+      await replyToUser(replyToken, `${user.name}さん、本日のリザーブ手当（${RAIN_ALLOWANCE}円）はすでに申請済みです。`);
+      return;
+    }
+
+    const today = format(toZonedTime(new Date(), 'Asia/Tokyo'), 'yyyy-MM-dd');
+    const { error } = await supabase.from('attendance').insert([{
+      line_uid: uid,
+      date: today,
+      reserve_only: true,
+      rain_allowance: RAIN_ALLOWANCE,
+      transportation: 0,
+      break_minutes: 0,
+      work_minutes: 0
+    }]);
+
+    if (error) {
+      console.error('Reserve-only application error:', error);
+      await replyToUser(replyToken, 'リザーブ申請の登録中にエラーが発生しました。管理者に連絡してください。');
+      return;
+    }
+
+    await replyToUser(replyToken, `${user.name}さん、リザーブ手当（${RAIN_ALLOWANCE}円）を記録しました。\n出勤打刻・交通費・勤務時間は加算されません。`);
     return;
   }
 
@@ -352,6 +380,11 @@ async function handleClockInRequest(uid, timeStr, replyToken) {
   const user = await getUserInfo(uid);
   const record = await findTodayAttendance(uid);
 
+  if (record && record.reserve_only) {
+    await replyToUser(replyToken, '本日はリザーブ手当のみの申請日として登録されています。出勤申告はできません。勤務することになった場合は、管理者に連絡してください。');
+    return;
+  }
+
   if (record && record.clock_in) {
     await replyToUser(replyToken, `本日の出勤時刻はすでに記録されています（${record.clock_in.substring(0,5)}）。`);
     return;
@@ -405,6 +438,10 @@ async function handleClockOutRequest(uid, timeStr, replyToken) {
   
   if (!record) {
     await replyToUser(replyToken, '本日の出勤記録がありません。先に出勤打刻をしてください。');
+    return;
+  }
+  if (record.reserve_only) {
+    await replyToUser(replyToken, '本日はリザーブ手当のみの申請日として登録されています。退勤申告はできません。勤務することになった場合は、管理者に連絡してください。');
     return;
   }
   if (record.clock_out) {
@@ -577,10 +614,11 @@ app.get('/api/liff', async (req, res) => {
 
     if (monthRes) {
       records = monthRes.map(r => {
+        const reserveOnly = r.reserve_only === true;
         const wMin = r.work_minutes || 0;
         const penalty = r.penalty || 0;
         const rain = r.rain_allowance || 0;
-        const transport = r.transportation || 0;
+        const transport = reserveOnly ? 0 : (r.transportation || 0);
         const basePay = Math.round((wMin / 60) * user.hourlyWage);
         const dayPay = basePay + penalty + rain + transport;
 
@@ -593,7 +631,8 @@ app.get('/api/liff', async (req, res) => {
           clockIn: r.clock_in ? r.clock_in.substring(0, 5) : null,
           clockOut: r.clock_out ? r.clock_out.substring(0, 5) : null,
           workMin: wMin,
-          workHours: (wMin !== null && wMin !== undefined && wMin > 0) ? `${Math.floor(wMin/60)}h${wMin%60}m` : '-',
+          workHours: reserveOnly ? 'リザーブのみ' : ((wMin !== null && wMin !== undefined && wMin > 0) ? `${Math.floor(wMin/60)}h${wMin%60}m` : '-'),
+          reserveOnly: reserveOnly,
           penalty: penalty,
           rain: rain,
           transport: transport,
@@ -615,7 +654,8 @@ app.get('/api/liff', async (req, res) => {
       todayData = {
         clockIn: todayRes.clock_in ? todayRes.clock_in.substring(0, 5) : null,
         clockOut: todayRes.clock_out ? todayRes.clock_out.substring(0, 5) : null,
-        workMin: todayRes.work_minutes || 0
+        workMin: todayRes.work_minutes || 0,
+        reserveOnly: todayRes.reserve_only === true
       };
     }
 
@@ -770,12 +810,13 @@ app.get('/api/admin/attendance', adminAuth, async (req, res) => {
 
   const records = (attData || []).map(r => {
     const u = userMap[r.line_uid] || {};
+    const reserveOnly = r.reserve_only === true;
     const wMin = r.work_minutes || 0;
     const hourlyWage = u.hourly_wage || 0;
     const basePay = Math.round((wMin / 60) * hourlyWage);
     const penalty = r.penalty || 0;
     const rain = r.rain_allowance || 0;
-    const transport = r.transportation || 0;
+    const transport = reserveOnly ? 0 : (r.transportation || 0);
     const dayPay = basePay + penalty + rain + transport;
     return {
       id: r.id,
@@ -786,7 +827,8 @@ app.get('/api/admin/attendance', adminAuth, async (req, res) => {
       clockIn: r.clock_in ? r.clock_in.substring(0, 5) : '-',
       clockOut: r.clock_out ? r.clock_out.substring(0, 5) : '-',
       workMin: wMin,
-      workHours: wMin ? `${Math.floor(wMin/60)}h${wMin%60}m` : '-',
+      workHours: reserveOnly ? 'リザーブのみ' : (wMin ? `${Math.floor(wMin/60)}h${wMin%60}m` : '-'),
+      reserveOnly: reserveOnly,
       hourlyWage: hourlyWage,
       basePay: basePay,
       penalty: penalty,
@@ -900,8 +942,8 @@ app.get('/api/admin/monthly-summary', adminAuth, async (req, res) => {
     const basePay = Math.round((wMin / 60) * s.hourlyWage);
     const penalty = r.penalty || 0;
     const rain = r.rain_allowance || 0;
-    const transport = r.transportation || 0;
-    if (r.clock_in) s.workDays++;
+    const transport = r.reserve_only ? 0 : (r.transportation || 0);
+    if (r.clock_in && !r.reserve_only) s.workDays++;
     s.totalWorkMin += wMin;
     s.totalBasePay += basePay;
     s.totalPenalty += penalty;
@@ -1181,6 +1223,13 @@ app.post('/api/admin/updateAttendance', adminAuth, async (req, res) => {
     const roundedOut = roundTime(outDate, false);
     updates.clock_out = format(toZonedTime(roundedOut, TZ), 'HH:mm');
     updates.clock_out_raw = clockOut;
+  }
+
+  // リザーブ単独レコードへ勤務時刻を入力した場合は、通常勤務へ戻す。
+  // 実際に勤務した日は交通費を通常どおり計上する。
+  if (rec.reserve_only && (clockIn || clockOut)) {
+    updates.reserve_only = false;
+    updates.transportation = TRANSPORT_FEE;
   }
 
   // work_minutesを再計算

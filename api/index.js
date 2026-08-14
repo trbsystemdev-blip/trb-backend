@@ -1235,13 +1235,30 @@ app.post('/api/admin/expense-settings', adminAuth, async (req, res) => {
   if (!Number.isInteger(opening) || opening < 0 || !Number.isInteger(threshold) || threshold < 0) {
     return res.json({ success: false, error: '開始残高・アラート基準は0以上の整数で入力してください。' });
   }
+  let resolvedAlertLineUid = alertLineUid || null;
+  // フロントエンドが候補を取得できない場合でも、既定通知先の渡部大輔さんを安全に解決する。
+  if (resolvedAlertLineUid === '__WATANABE_DAISUKE__') {
+    const { data: defaultRecipient } = await supabase
+      .from('users')
+      .select('line_uid')
+      .ilike('name', '%渡部大輔%')
+      .limit(1);
+    if (!defaultRecipient || !defaultRecipient[0]) {
+      return res.json({ success: false, error: '渡部大輔さんのLINE登録情報が見つかりません。スタッフ管理で登録状況を確認してください。' });
+    }
+    resolvedAlertLineUid = defaultRecipient[0].line_uid;
+  }
+  if (!resolvedAlertLineUid) {
+    return res.json({ success: false, error: '通知先を選択してください。' });
+  }
+
   const { data, error } = await supabase
     .from('expense_settings')
     .upsert({
       id: 1,
       opening_balance: opening,
       low_balance_threshold: threshold,
-      alert_line_uid: alertLineUid || null,
+      alert_line_uid: resolvedAlertLineUid,
       is_low_balance_alerted: false,
       updated_at: new Date().toISOString()
     })

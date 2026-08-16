@@ -284,13 +284,13 @@ async function calculateExpenseBalance() {
     return { balance: null, settings, totals: null };
   }
 
-  const totals = { expense: 0, replenishment: 0, loss: 0 };
+  const totals = { expense: 0, replenishment: 0, income: 0, loss: 0 };
   (rows || []).forEach(row => {
     if (Object.prototype.hasOwnProperty.call(totals, row.transaction_type)) {
       totals[row.transaction_type] += Number(row.amount) || 0;
     }
   });
-  const balance = Number(settings.opening_balance || 0) + totals.replenishment - totals.expense - totals.loss;
+  const balance = Number(settings.opening_balance || 0) + totals.replenishment + totals.income - totals.expense - totals.loss;
   return { balance, settings, totals };
 }
 
@@ -340,6 +340,51 @@ async function addExpenseTransaction({ transactionType, amount, purpose, receipt
 async function startExpenseFlow(uid, replyToken) {
   await setUserState(uid, 'EXPENSE_AMOUNT', { transactionType: 'expense' });
   await replyToUser(replyToken, '【経費報告】\n使用した金額を数字で入力してください。\n例）1280\n\n※現金を補充する場合は、管理画面の「経費管理」タブから登録してください。');
+}
+
+// スタッフが経費袋へ現金を戻す・入れる場合の報告フロー
+async function startIncomeFlow(uid, replyToken) {
+  await setUserState(uid, 'INCOME_AMOUNT', { transactionType: 'income' });
+  await replyToUser(replyToken, '【入金報告】\n経費袋へ入金した金額を数字で入力してください。\n例）3000');
+}
+
+async function handleIncomeFlow(uid, text, replyToken) {
+  const user = await getUserInfo(uid);
+  const state = user ? user.state : '';
+  const data = user && user.stateData ? user.stateData : {};
+
+  if (state === 'INCOME_AMOUNT') {
+    const normalized = String(text).replace(/[，,円\s]/g, '');
+    const amount = Number(normalized);
+    if (!Number.isInteger(amount) || amount <= 0 || amount > 1000000) {
+      await replyToUser(replyToken, '金額は1円以上1,000,000円以下の数字で入力してください。\n例）3000');
+      return;
+    }
+    await setUserState(uid, 'INCOME_PURPOSE', { ...data, amount });
+    await replyToUser(replyToken, '入金内容を入力してください。\n例）売上精算分を経費袋へ入金');
+    return;
+  }
+
+  if (state === 'INCOME_PURPOSE') {
+    const purpose = String(text || '').trim();
+    if (!purpose || purpose.length > 200) {
+      await replyToUser(replyToken, '入金内容を1〜200文字で入力してください。');
+      return;
+    }
+    const result = await addExpenseTransaction({
+      transactionType: 'income',
+      amount: Number(data.amount),
+      purpose,
+      reportedBy: uid,
+      note: 'スタッフ入金報告'
+    });
+    if (result.error) {
+      await replyToUser(replyToken, '入金報告の保存中にエラーが発生しました。管理者に連絡してください。');
+      return;
+    }
+    await setUserState(uid, '');
+    await replyToUser(replyToken, `【入金報告を登録しました】\n金額：+${Number(data.amount).toLocaleString()}円\n内容：${purpose}\n経費袋残高：${Number(result.balance).toLocaleString()}円`);
+  }
 }
 
 async function handleExpenseFlow(uid, text, replyToken) {
@@ -446,6 +491,11 @@ async function handleTextMessage(uid, text, replyToken) {
     return;
   }
 
+  if (state && state.startsWith('INCOME_')) {
+    await handleIncomeFlow(uid, text, replyToken);
+    return;
+  }
+
   if (state && state.startsWith('CLOCK_IN_REASON:')) {
     await handleClockInRequest(uid, state.substring('CLOCK_IN_REASON:'.length), replyToken, text);
     return;
@@ -478,6 +528,11 @@ async function handleTextMessage(uid, text, replyToken) {
 
   if (text === '経費報告' || text === '経費申請') {
     await startExpenseFlow(uid, replyToken);
+    return;
+  }
+
+  if (text === '入金報告') {
+    await startIncomeFlow(uid, replyToken);
     return;
   }
 
@@ -1307,8 +1362,10 @@ app.get('/api/admin/expenses', adminAuth, async (req, res) => {
     };
   }));
 
-  const monthTotals = { expense: 0, replenishment: 0, loss: 0 };
-  records.forEach(r => { monthTotals[r.type] += r.amount; });
+  const monthTotals = { expense: 0, replenishment: 0, income: 0, loss: 0 };
+  records.forEach(r => {
+    if (Object.prototype.hasOwnProperty.call(monthTotals, r.type)) monthTotals[r.type] += r.amount;
+  });
   const balanceResult = await calculateExpenseBalance();
   if (balanceResult.balance === null) return res.json({ success: false, error: '残高を計算できませんでした。SQL移行を確認してください。' });
   return res.json({
@@ -1323,7 +1380,7 @@ app.get('/api/admin/expenses', adminAuth, async (req, res) => {
 
 app.post('/api/admin/expense-transaction', adminAuth, async (req, res) => {
   const { transactionType, amount, purpose, note } = req.body;
-  if (!['replenishment', 'loss', 'expense'].includes(transactionType)) {
+  if (!['replenishment', 'income', 'loss', 'expense'].includes(transactionType)) {
     return res.json({ success: false, error: '取引種別が不正です。' });
   }
   const numericAmount = Number(amount);

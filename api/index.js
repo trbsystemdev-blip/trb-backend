@@ -4,6 +4,7 @@ const axios = require('axios');
 const { format } = require('date-fns');
 const { toZonedTime } = require('date-fns-tz');
 const { createClient } = require('@supabase/supabase-js');
+const { buildShiftSubmissionNotification } = require('../lib/shiftSubmissionNotification');
 
 const app = express();
 app.use(cors({
@@ -313,6 +314,52 @@ async function updateLowBalanceAlert() {
       .eq('id', 1);
   }
   return result;
+}
+
+// シフト希望の即時通知は、経費残高アラートと同じ通知先（渡部大輔さん）を利用する。
+// 同じLIFF保存操作の再送では、DBの一意キーにより重複通知を防止する。
+async function getShiftNotificationRecipient() {
+  let settings = await getExpenseSettings();
+  settings = await ensureExpenseAlertRecipient(settings);
+  return settings && settings.alert_line_uid ? settings.alert_line_uid : null;
+}
+
+async function reserveShiftSubmissionNotification(lineUid, entries) {
+  const notification = buildShiftSubmissionNotification(lineUid, entries);
+  const { error } = await supabase
+    .from('shift_submission_notifications')
+    .insert([{
+      submission_key: notification.submissionKey,
+      line_uid: lineUid,
+      target_months: notification.targetMonths.join('・'),
+      entry_count: notification.entryCount
+    }]);
+
+  if (!error) return { status: 'reserved', notification };
+  if (error.code === '23505') return { status: 'duplicate', notification };
+  console.error('reserveShiftSubmissionNotification error:', error);
+  return { status: 'error', notification };
+}
+
+async function notifyShiftSubmission(user, lineUid, entries) {
+  const recipient = await getShiftNotificationRecipient();
+  if (!recipient) {
+    console.error('Shift submission notification recipient is not configured.');
+    return { sent: false, reason: '通知先未設定' };
+  }
+
+  const reserved = await reserveShiftSubmissionNotification(lineUid, entries);
+  if (reserved.status === 'duplicate') return { sent: false, reason: '重複提出' };
+  if (reserved.status === 'error') return { sent: false, reason: '通知記録エラー' };
+
+  const name = user && user.name ? user.name : 'スタッフ';
+  const message = `【シフト希望 提出通知】\n${name}さんが${reserved.notification.targetMonths.join('・')}分のシフト希望を提出しました。\n提出件数：${reserved.notification.entryCount}件\n\n管理画面の「シフト希望」タブで内容を確認してください。`;
+  const sent = await pushToUser(recipient, message);
+  if (!sent) {
+    await supabase.from('shift_submission_notifications').delete().eq('submission_key', reserved.notification.submissionKey);
+    return { sent: false, reason: 'LINE送信エラー' };
+  }
+  return { sent: true };
 }
 
 async function addExpenseTransaction({ transactionType, amount, purpose, receiptPath = null, reportedBy = null, note = null }) {
@@ -818,8 +865,10 @@ async function pushToUser(uid, message) {
       to: uid,
       messages: [{ type: 'text', text: message }]
     }, { headers: { 'Authorization': `Bearer ${LINE_CHANNEL_ACCESS_TOKEN}` } });
+    return true;
   } catch (err) {
     console.error('pushToUser error:', err.response ? err.response.data : err.message);
+    return false;
   }
 }
 
@@ -992,6 +1041,9 @@ app.post('/api/liff', async (req, res) => {
   if (action === 'saveShifts') {
     const user = await getUserInfo(lineUid);
     if (!user) return res.json({ success: false, error: 'User not found' });
+    if (!Array.isArray(entries) || entries.length === 0) {
+      return res.json({ success: false, error: 'シフト希望を1件以上指定してください。' });
+    }
 
     let saved = 0;
     for (const e of entries) {
@@ -1015,7 +1067,7 @@ app.post('/api/liff', async (req, res) => {
         .single();
         
       if (existing) {
-        await supabase
+        const { error: updateError } = await supabase
           .from('shifts')
           .update({
             shift_type: type,
@@ -1023,8 +1075,12 @@ app.post('/api/liff', async (req, res) => {
             end_time: type === '出勤希望' ? endTime : null
           })
           .eq('id', existing.id);
+        if (updateError) {
+          console.error('saveShifts update error:', updateError);
+          return res.json({ success: false, error: 'シフト希望の更新に失敗しました。通知は送信されていません。' });
+        }
       } else {
-        await supabase
+        const { error: insertError } = await supabase
           .from('shifts')
           .insert([{
             line_uid: lineUid,
@@ -1033,10 +1089,15 @@ app.post('/api/liff', async (req, res) => {
             start_time: type === '出勤希望' ? startTime : null,
             end_time: type === '出勤希望' ? endTime : null
           }]);
+        if (insertError) {
+          console.error('saveShifts insert error:', insertError);
+          return res.json({ success: false, error: 'シフト希望の保存に失敗しました。通知は送信されていません。' });
+        }
       }
       saved++;
     }
-    return res.json({ success: true, saved: saved });
+    const notification = await notifyShiftSubmission(user, lineUid, entries);
+    return res.json({ success: true, saved: saved, notification: notification });
   }
 
   if (action === 'saveReport') {

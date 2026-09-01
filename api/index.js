@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
+const fs = require('fs');
 const path = require('path');
 const { format } = require('date-fns');
 const { toZonedTime } = require('date-fns-tz');
@@ -1315,7 +1316,16 @@ function requireSnsVideoFormOrigin(req, res, next) {
 }
 
 app.get('/sns-video-bank', (req, res) => {
-  return res.sendFile(path.join(__dirname, '..', 'public', 'sns-video-bank.html'));
+  try {
+    // fs.readFileSyncとprocess.cwd()の組合せにより、VercelのNode File Traceが
+    // public配下のLIFFフォームをServerless Functionへ同梱できるようにする。
+    const formPath = path.join(process.cwd(), 'public', 'sns-video-bank.html');
+    const formHtml = fs.readFileSync(formPath, 'utf8');
+    return res.type('html').send(formHtml);
+  } catch (err) {
+    console.error('sns-video liff form load error:', err.message);
+    return res.status(500).send('口座登録フォームを読み込めませんでした。管理者へご連絡ください。');
+  }
 });
 
 app.get('/api/sns-video/liff-config', (req, res) => {

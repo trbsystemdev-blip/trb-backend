@@ -1,10 +1,23 @@
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
+const path = require('path');
 const { format } = require('date-fns');
 const { toZonedTime } = require('date-fns-tz');
 const { createClient } = require('@supabase/supabase-js');
 const { buildShiftSubmissionNotification } = require('../lib/shiftSubmissionNotification');
+const {
+  BANK_ACCOUNT_STEPS,
+  encryptObject,
+  decryptObject,
+  normalizeAccountInput,
+  maskAccountNumber,
+  maskHolderKana,
+  looksLikeBankInfoMessage
+} = require('../lib/snsVideoEnrollment');
+const {
+  validateLiffBankFormInput
+} = require('../lib/snsVideoLiffForm');
 
 const app = express();
 app.use(cors({
@@ -56,6 +69,12 @@ const TRANSPORT_FEE = 500;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY; // Service Role Key推奨
 const LINE_CHANNEL_ACCESS_TOKEN = process.env.LINE_CHANNEL_ACCESS_TOKEN;
+const BANK_INFO_ENCRYPTION_KEY = process.env.BANK_INFO_ENCRYPTION_KEY;
+const LINE_LOGIN_CHANNEL_ID = process.env.LINE_LOGIN_CHANNEL_ID;
+const LIFF_ID = process.env.SNS_VIDEO_LIFF_ID;
+const SNS_VIDEO_LIFF_URL = LIFF_ID ? `https://liff.line.me/${LIFF_ID}` : null;
+const SNS_VIDEO_FORM_ORIGIN = process.env.SNS_VIDEO_FORM_ORIGIN || 'https://trb-backend.vercel.app';
+const SNS_VIDEO_LIFF_FORM_VERSION = '2026-09-01';
 
 // --- Supabase クライアント ---
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
@@ -521,7 +540,119 @@ async function handleExpenseReceiptImage(uid, messageId, replyToken) {
   }
 }
 
-async function handleTextMessage(uid, text, replyToken) {
+// --- SNS動画施策：参加同意・振込先口座登録 ---
+// 口座情報の途中入力も含め、平文はusers.state_dataへ保存しない。
+async function getBankAccountDraft(uid) {
+  const { data, error } = await supabase
+    .from('sns_video_bank_account_drafts')
+    .select('*')
+    .eq('line_uid', uid)
+    .single();
+  if (error && error.code !== 'PGRST116') console.error('getBankAccountDraft error:', error);
+  if (!data) return {};
+  try { return decryptObject(data.encrypted_draft, BANK_INFO_ENCRYPTION_KEY); }
+  catch (err) { console.error('getBankAccountDraft decrypt error:', err.message); return {}; }
+}
+
+async function saveBankAccountDraft(uid, draft, step) {
+  const { error } = await supabase.from('sns_video_bank_account_drafts').upsert({
+    line_uid: uid,
+    encrypted_draft: encryptObject(draft, BANK_INFO_ENCRYPTION_KEY),
+    current_step: step,
+    updated_at: new Date().toISOString()
+  });
+  if (error) throw error;
+}
+
+async function clearBankAccountDraft(uid) {
+  const { error } = await supabase.from('sns_video_bank_account_drafts').delete().eq('line_uid', uid);
+  if (error) console.error('clearBankAccountDraft error:', error);
+}
+
+function getBankStepIndex(state) {
+  return BANK_ACCOUNT_STEPS.findIndex(step => step.state === state);
+}
+
+async function startBankAccountFlow(uid, replyToken) {
+  if (!BANK_INFO_ENCRYPTION_KEY || String(BANK_INFO_ENCRYPTION_KEY).length < 32 || !LINE_LOGIN_CHANNEL_ID || !LIFF_ID) {
+    await replyToUser(replyToken, '口座登録の受付準備中です。恐れ入りますが、管理者へご連絡ください。');
+    return;
+  }
+  await clearBankAccountDraft(uid);
+  await setUserState(uid, '');
+  await replyToUser(replyToken, `【SNS動画施策｜振込先口座登録】\n以下の専用フォームを開いて入力してください。口座情報は、このLINEトークには送信しないでください。\n\n${SNS_VIDEO_LIFF_URL}`);
+}
+
+async function saveSnsVideoConsent(uid, messageId) {
+  const { error } = await supabase.from('sns_video_consents').upsert({
+    line_uid: uid,
+    consented_at: new Date().toISOString(),
+    consent_message_id: messageId || null,
+    updated_at: new Date().toISOString()
+  }, { onConflict: 'line_uid' });
+  if (error) throw error;
+}
+
+async function handleBankAccountFlow(uid, text, replyToken, state) {
+  if (!BANK_INFO_ENCRYPTION_KEY || String(BANK_INFO_ENCRYPTION_KEY).length < 32) {
+    await setUserState(uid, '');
+    await replyToUser(replyToken, '口座登録の受付準備中です。管理者へご連絡ください。');
+    return;
+  }
+  const index = getBankStepIndex(state);
+  if (index < 0) return;
+  const step = BANK_ACCOUNT_STEPS[index];
+  const normalized = normalizeAccountInput(step.key, text);
+  if (!normalized.ok) {
+    await replyToUser(replyToken, normalized.message);
+    return;
+  }
+  const draft = await getBankAccountDraft(uid);
+  draft[step.key] = normalized.value;
+  if (index < BANK_ACCOUNT_STEPS.length - 1) {
+    const next = BANK_ACCOUNT_STEPS[index + 1];
+    await saveBankAccountDraft(uid, draft, next.state);
+    await setUserState(uid, next.state);
+    await replyToUser(replyToken, next.prompt);
+    return;
+  }
+  await saveBankAccountDraft(uid, draft, 'BANK_ACCOUNT_CONFIRM');
+  await setUserState(uid, 'BANK_ACCOUNT_CONFIRM');
+  await replyToUser(replyToken,
+    `【振込先口座の確認】\n銀行名：${draft.bankName}\n支店名：${draft.branchName}\n預金種別：${draft.accountType}\n口座番号：${maskAccountNumber(draft.accountNumber)}\n名義カナ：${draft.accountHolderKana}\n\n内容に誤りがなければ「確定」と送信してください。やり直す場合は「キャンセル」と送信後、もう一度「口座登録」と送信してください。`);
+}
+
+async function confirmBankAccountFlow(uid, text, replyToken) {
+  if (text !== '確定') {
+    await replyToUser(replyToken, '内容に誤りがなければ「確定」と送信してください。やり直す場合は「キャンセル」と送信してください。');
+    return;
+  }
+  try {
+    const draft = await getBankAccountDraft(uid);
+    if (!draft.bankName || !draft.branchName || !draft.accountType || !draft.accountNumber || !draft.accountHolderKana) throw new Error('Incomplete bank account draft');
+    const now = new Date().toISOString();
+    const { error } = await supabase.from('sns_video_bank_accounts').upsert({
+      line_uid: uid,
+      bank_name_encrypted: encryptObject({ value: draft.bankName }, BANK_INFO_ENCRYPTION_KEY),
+      branch_name_encrypted: encryptObject({ value: draft.branchName }, BANK_INFO_ENCRYPTION_KEY),
+      account_type_encrypted: encryptObject({ value: draft.accountType }, BANK_INFO_ENCRYPTION_KEY),
+      account_number_encrypted: encryptObject({ value: draft.accountNumber }, BANK_INFO_ENCRYPTION_KEY),
+      account_holder_kana_encrypted: encryptObject({ value: draft.accountHolderKana }, BANK_INFO_ENCRYPTION_KEY),
+      submission_status: 'complete',
+      submitted_at: now,
+      updated_at: now
+    }, { onConflict: 'line_uid' });
+    if (error) throw error;
+    await clearBankAccountDraft(uid);
+    await setUserState(uid, '');
+    await replyToUser(replyToken, '【振込先口座を登録しました】\n支払い時に登録内容を確認します。内容を変更する場合は、もう一度「口座登録」と送信してください。');
+  } catch (err) {
+    console.error('confirmBankAccountFlow error:', err.message);
+    await replyToUser(replyToken, '口座情報の登録中にエラーが発生しました。管理者へご連絡ください。');
+  }
+}
+
+async function handleTextMessage(uid, text, replyToken, messageId = null) {
   await ensureUserExists(uid);
   const user = await getUserInfo(uid);
   const state = user ? user.state : '';
@@ -540,6 +671,12 @@ async function handleTextMessage(uid, text, replyToken) {
 
   if (state && state.startsWith('INCOME_')) {
     await handleIncomeFlow(uid, text, replyToken);
+    return;
+  }
+
+  if (state && state.startsWith('BANK_ACCOUNT_')) {
+    if (state === 'BANK_ACCOUNT_CONFIRM') await confirmBankAccountFlow(uid, text, replyToken);
+    else await handleBankAccountFlow(uid, text, replyToken, state);
     return;
   }
 
@@ -580,6 +717,28 @@ async function handleTextMessage(uid, text, replyToken) {
 
   if (text === '入金報告') {
     await startIncomeFlow(uid, replyToken);
+    return;
+  }
+
+  if (/^同意します[。！!]?$/u.test(text)) {
+    try {
+      await saveSnsVideoConsent(uid, messageId);
+      await replyToUser(replyToken, '【SNS動画施策】同意を受け付けました。\n続けて振込先口座を登録する場合は「口座登録」と送信してください。');
+    } catch (err) {
+      console.error('saveSnsVideoConsent error:', err.message);
+      await replyToUser(replyToken, '同意の保存中にエラーが発生しました。お手数ですが管理者へご連絡ください。');
+    }
+    return;
+  }
+
+  if (text === '口座登録' || text === '振込先登録' || text === '口座情報登録') {
+    await startBankAccountFlow(uid, replyToken);
+    return;
+  }
+
+  // 旧案内に従って口座情報をまとめて送った場合も、メニュー案内ではなく安全な順番入力へ誘導する。
+  if (looksLikeBankInfoMessage(text)) {
+    await replyToUser(replyToken, '振込先口座は項目ごとに確認しながら登録します。\nまず「口座登録」と送信してください。\n\n銀行名 → 支店名 → 預金種別 → 口座番号 → 名義カナの順に案内します。');
     return;
   }
 
@@ -896,7 +1055,7 @@ app.post('/webhook', async (req, res) => {
 
       if (event.type === 'message') {
         if (event.message.type === 'text') {
-          await handleTextMessage(uid, event.message.text.trim(), replyToken);
+          await handleTextMessage(uid, event.message.text.trim(), replyToken, event.message.id || null);
         } else if (event.message.type === 'location') {
           await handleLocation(uid, event.message.latitude, event.message.longitude, replyToken);
         } else if (event.message.type === 'image') {
@@ -1034,7 +1193,7 @@ app.get('/api/liff', async (req, res) => {
   res.json({ success: false, error: 'Unknown action' });
 });
 
-app.post('/api/liff', async (req, res) => {
+app.post('/api/action', async (req, res) => {
   const { action, lineUid, entries } = req.body;
   if (!lineUid) return res.json({ success: false, error: 'lineUid is required' });
 
@@ -1125,6 +1284,111 @@ app.post('/api/liff', async (req, res) => {
   res.json({ success: false, error: 'Unknown action' });
 });
 
+// --- SNS動画施策：LIFF専用口座登録フォーム ---
+// LINEの署名検証とは別に、LIFFのIDトークンをサーバー側で検証して提出者を確定する。
+async function verifyLiffIdToken(idToken) {
+  if (!LINE_LOGIN_CHANNEL_ID) throw new Error('LIFF_LOGIN_CHANNEL_NOT_CONFIGURED');
+  if (!idToken || typeof idToken !== 'string' || idToken.length < 20) throw new Error('LIFF_ID_TOKEN_REQUIRED');
+  try {
+    const params = new URLSearchParams({ id_token: idToken, client_id: LINE_LOGIN_CHANNEL_ID });
+    const response = await axios.post('https://api.line.me/oauth2/v2.1/verify', params.toString(), {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      timeout: 8000
+    });
+    if (!response.data || !response.data.sub) throw new Error('LIFF_ID_TOKEN_INVALID');
+    return response.data;
+  } catch (err) {
+    if (err && err.response && err.response.status === 400) throw new Error('LIFF_ID_TOKEN_INVALID');
+    if (err && err.code === 'ECONNABORTED') throw new Error('LIFF_ID_TOKEN_TIMEOUT');
+    throw err;
+  }
+}
+
+function liffApiError(res, status, message) {
+  return res.status(status).json({ success: false, error: message });
+}
+
+function requireSnsVideoFormOrigin(req, res, next) {
+  const origin = req.headers.origin;
+  if (origin === SNS_VIDEO_FORM_ORIGIN) return next();
+  return liffApiError(res, 403, 'このフォームからの送信だけを受け付けます。LINEの登録リンクから開き直してください。');
+}
+
+app.get('/sns-video-bank', (req, res) => {
+  return res.sendFile(path.join(__dirname, '..', 'public', 'sns-video-bank.html'));
+});
+
+app.get('/api/sns-video/liff-config', (req, res) => {
+  if (!LIFF_ID || !LINE_LOGIN_CHANNEL_ID || !BANK_INFO_ENCRYPTION_KEY || String(BANK_INFO_ENCRYPTION_KEY).length < 32) {
+    return liffApiError(res, 503, '口座登録フォームは準備中です。管理者へご連絡ください。');
+  }
+  return res.json({ success: true, liffId: LIFF_ID, formVersion: SNS_VIDEO_LIFF_FORM_VERSION });
+});
+
+app.post('/api/sns-video/liff-account', requireSnsVideoFormOrigin, async (req, res) => {
+  const input = req.body || {};
+  const validated = validateLiffBankFormInput(input);
+  if (!validated.ok) return liffApiError(res, 400, validated.message);
+  if (!BANK_INFO_ENCRYPTION_KEY || String(BANK_INFO_ENCRYPTION_KEY).length < 32) return liffApiError(res, 503, '口座情報の保存設定が未完了です。');
+
+  try {
+    const lineProfile = await verifyLiffIdToken(input.idToken);
+    const lineUid = lineProfile.sub;
+    const user = await getUserInfo(lineUid);
+    if (!user || !String(user.name || '').trim() || user.name === lineUid) {
+      return liffApiError(res, 403, 'スタッフ登録を確認できません。先にLINEで「登録」と送信し、氏名・役職の登録を完了してください。');
+    }
+
+    const { data: consent, error: consentError } = await supabase
+      .from('sns_video_consents')
+      .select('line_uid')
+      .eq('line_uid', lineUid)
+      .maybeSingle();
+    if (consentError) throw consentError;
+    if (!consent) return liffApiError(res, 403, '参加同意を確認できません。先にLINEで「同意します」と送信してください。');
+
+    const now = new Date().toISOString();
+    const { error } = await supabase.from('sns_video_bank_accounts').upsert({
+      line_uid: lineUid,
+      bank_name_encrypted: encryptObject({ value: validated.value.bankName }, BANK_INFO_ENCRYPTION_KEY),
+      branch_name_encrypted: encryptObject({ value: validated.value.branchName }, BANK_INFO_ENCRYPTION_KEY),
+      account_type_encrypted: encryptObject({ value: validated.value.accountType }, BANK_INFO_ENCRYPTION_KEY),
+      account_number_encrypted: encryptObject({ value: validated.value.accountNumber }, BANK_INFO_ENCRYPTION_KEY),
+      account_holder_kana_encrypted: encryptObject({ value: validated.value.accountHolderKana }, BANK_INFO_ENCRYPTION_KEY),
+      submission_status: 'complete',
+      submission_source: 'liff_form',
+      form_version: SNS_VIDEO_LIFF_FORM_VERSION,
+      form_submitted_at: now,
+      submitted_at: now,
+      updated_at: now
+    }, { onConflict: 'line_uid' });
+    if (error) throw error;
+
+    await clearBankAccountDraft(lineUid);
+    await setUserState(lineUid, '');
+    await supabase.from('sns_video_bank_account_access_logs').insert({
+      line_uid: lineUid,
+      accessed_at: now,
+      access_purpose: 'liff_form_submission',
+      accessed_by: lineUid,
+      access_outcome: 'saved'
+    });
+    return res.json({ success: true, accountLast4: maskAccountNumber(validated.value.accountNumber) });
+  } catch (err) {
+    const knownError = ['LIFF_ID_TOKEN_REQUIRED', 'LIFF_ID_TOKEN_INVALID', 'LIFF_ID_TOKEN_TIMEOUT'];
+    if (knownError.includes(err.message)) {
+      const messages = {
+        LIFF_ID_TOKEN_REQUIRED: 'LINEで本人確認できませんでした。フォームをLINEアプリ内から開き直してください。',
+        LIFF_ID_TOKEN_INVALID: 'LINEで本人確認できませんでした。フォームをLINEアプリ内から開き直してください。',
+        LIFF_ID_TOKEN_TIMEOUT: '本人確認に時間がかかっています。時間をおいて再度お試しください。'
+      };
+      return liffApiError(res, 400, messages[err.message]);
+    }
+    console.error('sns-video liff account save error:', err.message);
+    return liffApiError(res, 500, '口座情報を保存できませんでした。時間をおいて再度お試しください。');
+  }
+});
+
 // --- 管理者向けAPIエンドポイント ---
 // 簡易パスワード認証ミドルウェア
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'trb-admin-2024';
@@ -1144,6 +1408,49 @@ app.get('/api/admin/users', adminAuth, async (req, res) => {
     .order('name', { ascending: true });
   if (error) return res.json({ success: false, error: error.message });
   return res.json({ success: true, users: data });
+});
+
+// SNS動画施策：同意・口座提出状況一覧。口座の平文は返さず、下4桁等だけを表示する。
+app.get('/api/admin/sns-video-submissions', adminAuth, async (req, res) => {
+  const { data: users, error: usersError } = await supabase
+    .from('users')
+    .select('line_uid, name, role')
+    .order('name', { ascending: true });
+  if (usersError) return res.json({ success: false, error: usersError.message });
+
+  const [{ data: consents, error: consentError }, { data: accounts, error: accountError }] = await Promise.all([
+    supabase.from('sns_video_consents').select('line_uid, consented_at'),
+    supabase.from('sns_video_bank_accounts').select('line_uid, account_number_encrypted, account_holder_kana_encrypted, submission_status, submitted_at')
+  ]);
+  if (consentError || accountError) return res.json({ success: false, error: (consentError || accountError).message });
+
+  const consentMap = new Map((consents || []).map(row => [row.line_uid, row]));
+  const accountMap = new Map((accounts || []).map(row => [row.line_uid, row]));
+  const records = (users || []).map(user => {
+    const consent = consentMap.get(user.line_uid);
+    const account = accountMap.get(user.line_uid);
+    let accountLast4 = null;
+    let accountHolderKanaMasked = null;
+    if (account && BANK_INFO_ENCRYPTION_KEY) {
+      try {
+        accountLast4 = maskAccountNumber(decryptObject(account.account_number_encrypted, BANK_INFO_ENCRYPTION_KEY).value);
+        accountHolderKanaMasked = maskHolderKana(decryptObject(account.account_holder_kana_encrypted, BANK_INFO_ENCRYPTION_KEY).value);
+      } catch (err) {
+        console.error('sns-video-submissions decrypt error:', err.message);
+      }
+    }
+    return {
+      lineUid: user.line_uid,
+      name: user.name || '未設定',
+      role: user.role || '',
+      consentedAt: consent ? consent.consented_at : null,
+      accountStatus: account ? account.submission_status : 'not_submitted',
+      accountSubmittedAt: account ? account.submitted_at : null,
+      accountLast4,
+      accountHolderKanaMasked
+    };
+  });
+  return res.json({ success: true, records });
 });
 
 // 時給更新

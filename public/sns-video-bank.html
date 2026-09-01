@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex,nofollow,noarchive">
+  <title>TRB｜振込先口座登録</title>
+  <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+  <style>
+    :root { color-scheme: light; --navy:#0c2945; --blue:#146fb8; --sky:#eaf5ff; --line:#d8e2ec; --danger:#bd283b; --ink:#142333; --muted:#66788a; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:#f4f8fb; color:var(--ink); font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Yu Gothic",Meiryo,sans-serif; }
+    .page { max-width:640px; min-height:100dvh; margin:0 auto; padding:20px 16px 42px; }
+    .brand { display:flex; align-items:center; gap:9px; margin:6px 2px 18px; color:var(--navy); font-weight:800; letter-spacing:.02em; }
+    .brand-mark { display:grid; place-items:center; width:30px; height:30px; border-radius:9px; background:var(--navy); color:#fff; font-size:12px; }
+    .card { background:#fff; border:1px solid var(--line); border-radius:20px; padding:24px 20px; box-shadow:0 10px 24px rgba(14,42,69,.06); }
+    h1 { margin:0; font-size:24px; line-height:1.35; letter-spacing:.02em; }
+    .lead { margin:10px 0 0; color:var(--muted); font-size:14px; line-height:1.65; }
+    .secure-note { margin:20px 0; border-radius:14px; padding:13px 14px; background:var(--sky); color:#195581; font-size:13px; line-height:1.6; }
+    .steps { display:flex; gap:4px; margin:22px 0; }
+    .step { height:5px; flex:1; border-radius:99px; background:#dce7f0; }
+    .step.active { background:var(--blue); }
+    label { display:block; margin:18px 0 7px; font-size:14px; font-weight:700; }
+    .required { color:var(--danger); font-size:12px; margin-left:4px; }
+    input, select, button { font:inherit; }
+    input, select { width:100%; min-height:48px; padding:11px 12px; color:var(--ink); border:1px solid #b9c8d5; border-radius:10px; background:#fff; font-size:16px; outline:none; }
+    input:focus, select:focus { border-color:var(--blue); box-shadow:0 0 0 3px rgba(20,111,184,.14); }
+    .hint { margin:7px 0 0; color:var(--muted); font-size:12px; line-height:1.5; }
+    .actions { display:flex; gap:10px; margin-top:26px; }
+    .button { flex:1; min-height:50px; border:0; border-radius:12px; padding:12px; font-weight:800; cursor:pointer; transition:transform .15s ease, opacity .15s ease; }
+    .button:active { transform:scale(.98); }
+    .button.primary { background:var(--navy); color:#fff; }
+    .button.secondary { background:#e9f0f6; color:#25445e; }
+    .button:disabled { cursor:not-allowed; opacity:.55; }
+    .notice { display:none; margin:16px 0 0; padding:12px 13px; border-radius:10px; font-size:13px; line-height:1.55; }
+    .notice.error { display:block; color:#8a1d2a; background:#fff0f2; border:1px solid #f2c7cf; }
+    .notice.info { display:block; color:#145178; background:#eef8ff; border:1px solid #c8e5f7; }
+    .hidden { display:none !important; }
+    .confirm-grid { display:grid; grid-template-columns:104px 1fr; gap:10px 12px; margin-top:18px; padding:16px; border:1px solid var(--line); border-radius:12px; background:#f8fafc; font-size:14px; line-height:1.5; }
+    .confirm-grid dt { color:var(--muted); }
+    .confirm-grid dd { margin:0; font-weight:700; overflow-wrap:anywhere; }
+    .consent { display:flex; align-items:flex-start; gap:9px; margin:19px 0 0; font-size:13px; line-height:1.55; }
+    .consent input { width:18px; min-height:18px; margin-top:1px; accent-color:var(--navy); }
+    .footer { margin:20px 4px 0; color:#728190; font-size:11px; line-height:1.55; }
+    @media (max-width:420px) { .card { padding:21px 16px; } h1 { font-size:22px; } .confirm-grid { grid-template-columns:88px 1fr; } }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <div class="brand"><span class="brand-mark">TRB</span><span>Tokyo Rental Bicycle</span></div>
+    <section class="card" aria-labelledby="form-title">
+      <div id="formView">
+        <h1 id="form-title">振込先口座の登録</h1>
+        <p class="lead">SNS動画施策の報酬振込先を登録します。入力内容をご確認のうえ、最後に登録してください。</p>
+        <p class="secure-note">この画面で入力した口座情報は、LINEのトークには送信されません。登録処理に必要な通信後、暗号化して保存します。</p>
+        <div class="steps" aria-label="入力状況"><span class="step active"></span><span class="step active"></span><span class="step active"></span><span class="step active"></span></div>
+
+        <form id="bankForm" novalidate>
+          <label for="bankName">金融機関 <span class="required">必須</span></label>
+          <input id="bankName" name="bankName" autocomplete="off" inputmode="text" maxlength="100" placeholder="例）みずほ銀行" required>
+          <p class="hint">通帳・キャッシュカードの表記に合わせて入力してください。</p>
+
+          <label for="branchName">支店 <span class="required">必須</span></label>
+          <input id="branchName" name="branchName" autocomplete="off" inputmode="text" maxlength="100" placeholder="例）東京営業部" required>
+          <p class="hint">支店名を通帳・キャッシュカードの表記に合わせて入力してください。</p>
+
+          <label for="accountType">預金種別 <span class="required">必須</span></label>
+          <select id="accountType" name="accountType" required>
+            <option value="">選択してください</option><option value="普通">普通</option><option value="当座">当座</option>
+          </select>
+
+          <label for="accountNumber">口座番号 <span class="required">必須</span></label>
+          <input id="accountNumber" name="accountNumber" autocomplete="off" inputmode="numeric" maxlength="9" placeholder="7桁の数字" required>
+          <p class="hint">ハイフンは不要です。先頭が0の場合も省略しないでください。</p>
+
+          <label for="accountNumberConfirmation">口座番号（確認用） <span class="required">必須</span></label>
+          <input id="accountNumberConfirmation" name="accountNumberConfirmation" autocomplete="off" inputmode="numeric" maxlength="9" placeholder="もう一度同じ口座番号を入力" required>
+
+          <label for="accountHolderKana">口座名義（カナ） <span class="required">必須</span></label>
+          <input id="accountHolderKana" name="accountHolderKana" autocomplete="off" maxlength="120" placeholder="例）ヤマダ タロウ" required>
+          <p class="hint">通帳・キャッシュカードの表記どおり、全角カタカナで入力してください。</p>
+
+          <div id="formNotice" class="notice" role="alert"></div>
+          <div class="actions"><button id="reviewButton" class="button primary" type="submit">入力内容を確認する</button></div>
+        </form>
+      </div>
+
+      <div id="confirmView" class="hidden">
+        <h1>登録内容の確認</h1>
+        <p class="lead">内容に誤りがないか確認し、登録してください。</p>
+        <dl id="confirmGrid" class="confirm-grid"></dl>
+        <label class="consent"><input id="confirmationCheck" type="checkbox"><span>振込先口座の内容に誤りがないことを確認しました。支払い照合のため、この情報を暗号化して保管することに同意します。</span></label>
+        <div id="confirmNotice" class="notice" role="alert"></div>
+        <div class="actions"><button id="backButton" class="button secondary" type="button">修正する</button><button id="submitButton" class="button primary" type="button">登録する</button></div>
+      </div>
+
+      <div id="successView" class="hidden">
+        <h1>登録しました</h1>
+        <p id="successText" class="lead">振込先口座を受け付けました。内容を変更する場合は、LINEの「口座登録」からもう一度フォームを開いてください。</p>
+        <div class="actions"><button id="closeButton" class="button primary" type="button">LINEに戻る</button></div>
+      </div>
+    </section>
+    <p class="footer">登録後の口座番号全桁は通常の管理画面に表示されません。口座情報をLINEトークへ送信しないでください。</p>
+  </main>
+
+  <script>
+    (() => {
+      const state = { liffId: '', idToken: '', formVersion: '' };
+      const $ = id => document.getElementById(id);
+      const formNotice = $('formNotice');
+      const confirmNotice = $('confirmNotice');
+      const showNotice = (element, message, kind = 'error') => { element.textContent = message; element.className = `notice ${kind}`; };
+      const clearNotice = element => { element.textContent = ''; element.className = 'notice'; };
+      const safe = value => String(value || '').replace(/[&<>"']/g, char => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' })[char]);
+      const kana = value => String(value || '').replace(/[\uFF10-\uFF19]/g, char => String.fromCharCode(char.charCodeAt(0) - 0xFEE0)).replace(/[^0-9]/g, '');
+      const mask = value => value.length === 7 ? `***${value.slice(-4)}` : '***';
+
+      async function request(url, options = {}) {
+        const response = await fetch(url, { credentials: 'same-origin', ...options });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data.success) throw new Error(data.error || '通信に失敗しました。');
+        return data;
+      }
+
+      $('bankForm').addEventListener('submit', event => {
+        event.preventDefault(); clearNotice(formNotice);
+        const number = kana($('accountNumber').value);
+        const confirmation = kana($('accountNumberConfirmation').value);
+        const accountType = $('accountType').value;
+        const holder = $('accountHolderKana').value.trim();
+        const bankName = $('bankName').value.trim();
+        const branchName = $('branchName').value.trim();
+        if (!bankName || bankName.length > 100 || !branchName || branchName.length > 100) return showNotice(formNotice, '金融機関名と支店名を、それぞれ1〜100文字で入力してください。');
+        if (!accountType || !/^\d{7}$/.test(number) || !/^\d{7}$/.test(confirmation) || !holder) return showNotice(formNotice, 'すべての必須項目を正しい形式で入力してください。');
+        if (number !== confirmation) return showNotice(formNotice, '確認用の口座番号が一致しません。');
+        $('confirmGrid').innerHTML = `<dt>金融機関</dt><dd>${safe(bankName)}</dd><dt>支店</dt><dd>${safe(branchName)}</dd><dt>預金種別</dt><dd>${safe(accountType)}</dd><dt>口座番号</dt><dd>${safe(mask(number))}</dd><dt>名義カナ</dt><dd>${safe(holder)}</dd>`;
+        $('formView').classList.add('hidden'); $('confirmView').classList.remove('hidden'); window.scrollTo({ top: 0, behavior: 'smooth' });
+      });
+
+      $('backButton').addEventListener('click', () => { $('confirmView').classList.add('hidden'); $('formView').classList.remove('hidden'); clearNotice(confirmNotice); });
+      $('submitButton').addEventListener('click', async () => {
+        clearNotice(confirmNotice);
+        if (!$('confirmationCheck').checked) return showNotice(confirmNotice, '内容確認と保管への同意にチェックしてください。');
+        const button = $('submitButton'); button.disabled = true; button.textContent = '登録中…';
+        try {
+          const payload = {
+            idToken: state.idToken, bankName: $('bankName').value, branchName: $('branchName').value,
+            accountType: $('accountType').value, accountNumber: $('accountNumber').value,
+            accountNumberConfirmation: $('accountNumberConfirmation').value, accountHolderKana: $('accountHolderKana').value
+          };
+          const data = await request('/api/sns-video/liff-account', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+          $('successText').textContent = `口座番号 ${data.accountLast4} の振込先を受け付けました。内容を変更する場合は、LINEの「口座登録」からもう一度フォームを開いてください。`;
+          $('confirmView').classList.add('hidden'); $('successView').classList.remove('hidden');
+          $('bankForm').reset();
+        } catch (error) { showNotice(confirmNotice, error.message); }
+        finally { button.disabled = false; button.textContent = '登録する'; }
+      });
+      $('closeButton').addEventListener('click', () => { if (window.liff && liff.isInClient()) liff.closeWindow(); else window.close(); });
+
+      async function init() {
+        try {
+          const config = await request('/api/sns-video/liff-config'); state.liffId = config.liffId; state.formVersion = config.formVersion;
+          await liff.init({ liffId: state.liffId });
+          if (!liff.isLoggedIn()) { liff.login({ redirectUri: window.location.href }); return; }
+          state.idToken = liff.getIDToken();
+          if (!state.idToken) throw new Error('LINEで本人確認できませんでした。LINEアプリからフォームを開き直してください。');
+        } catch (error) {
+          const message = error && error.message === 'Failed to fetch'
+            ? 'フォームを開始できませんでした。LINEアプリ内のリンクから開き直してください。'
+            : (error.message || 'フォームを開始できませんでした。LINEアプリから開き直してください。');
+          showNotice(formNotice, message); $('reviewButton').disabled = true;
+        }
+      }
+      init();
+    })();
+  </script>
+</body>
+</html>

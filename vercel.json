@@ -5,7 +5,7 @@
       "src": "api/index.js",
       "use": "@vercel/node",
       "config": {
-        "includeFiles": ["public/sns-video-bank.html"]
+        "includeFiles": ["public/sns-video-bank.html", "public/sns-video-consent.html"]
       }
     }
   ],

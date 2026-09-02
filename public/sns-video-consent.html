@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex,nofollow,noarchive">
+  <title>TRB｜SNS動画施策 参加同意</title>
+  <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+  <style>
+    :root { color-scheme:light; --navy:#0c2945; --blue:#146fb8; --sky:#eaf5ff; --line:#d8e2ec; --danger:#bd283b; --ink:#142333; --muted:#66788a; --orange:#ef6c16; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:#f4f8fb; color:var(--ink); font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Yu Gothic",Meiryo,sans-serif; }
+    .page { max-width:640px; min-height:100dvh; margin:0 auto; padding:20px 16px 42px; }
+    .brand { display:flex; align-items:center; gap:9px; margin:6px 2px 18px; color:var(--navy); font-weight:800; letter-spacing:.02em; }
+    .brand-mark { display:grid; place-items:center; width:30px; height:30px; border-radius:9px; background:var(--navy); color:#fff; font-size:12px; }
+    .card { background:#fff; border:1px solid var(--line); border-radius:20px; padding:24px 20px; box-shadow:0 10px 24px rgba(14,42,69,.06); }
+    h1 { margin:0; font-size:24px; line-height:1.35; letter-spacing:.02em; }
+    .lead { margin:10px 0 0; color:var(--muted); font-size:14px; line-height:1.65; }
+    .notice { display:none; margin:16px 0 0; padding:12px 13px; border-radius:10px; font-size:13px; line-height:1.55; }
+    .notice.error { display:block; color:#8a1d2a; background:#fff0f2; border:1px solid #f2c7cf; }
+    .notice.info { display:block; color:#145178; background:#eef8ff; border:1px solid #c8e5f7; }
+    .terms { margin:20px 0 0; padding:0; list-style:none; border-top:1px solid var(--line); }
+    .terms li { padding:15px 0; border-bottom:1px solid var(--line); font-size:14px; line-height:1.65; }
+    .terms strong { display:block; margin-bottom:4px; color:var(--navy); font-size:15px; }
+    .payment { margin-top:18px; padding:14px; border-radius:12px; background:var(--sky); color:#195581; font-size:13px; line-height:1.65; }
+    .consent { display:flex; align-items:flex-start; gap:9px; margin:22px 0 0; font-size:13px; line-height:1.6; font-weight:700; }
+    .consent input { width:18px; min-height:18px; margin-top:1px; accent-color:var(--navy); }
+    .button { width:100%; min-height:50px; margin-top:20px; border:0; border-radius:12px; padding:12px; background:var(--navy); color:#fff; font:inherit; font-weight:800; cursor:pointer; transition:transform .15s ease, opacity .15s ease; }
+    .button:active { transform:scale(.98); } .button:disabled { cursor:not-allowed; opacity:.55; }
+    .hidden { display:none !important; }
+    .next { margin-top:18px; padding:15px; border-radius:12px; background:#f8fafc; border:1px solid var(--line); font-size:13px; line-height:1.65; }
+    .footer { margin:20px 4px 0; color:#728190; font-size:11px; line-height:1.55; }
+    @media (max-width:420px) { .card { padding:21px 16px; } h1 { font-size:22px; } }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <div class="brand"><span class="brand-mark">TRB</span><span>Tokyo Rental Bicycle</span></div>
+    <section class="card" aria-labelledby="consent-title">
+      <div id="consentView">
+        <h1 id="consent-title">SNS動画施策 参加同意</h1>
+        <p class="lead">内容をご確認のうえ、参加される場合は画面下部で同意してください。</p>
+        <ol class="terms">
+          <li><strong>1．報酬</strong>投稿または販売が成立した1件につき、ガイド500円、ドライバー500円をお支払いします。</li>
+          <li><strong>2．カウント</strong>1人の投稿につき1件です。同じグループで3人が投稿すれば3件です。同じお客様を投稿と販売の両方で数えることはしません。</li>
+          <li><strong>3．成立の確認</strong>その場で投稿とタグ付けを確認できたものを成立とし、グループLINEへの報告をもって記録とします。</li>
+          <li><strong>4．支払い</strong>月末締め・翌月末払いで、ご指定の口座へ振り込みます。</li>
+          <li><strong>5．その他</strong>試験的に開始する施策のため、運用方法は変更となる場合があります。</li>
+          <li><strong>6．詳しい進め方</strong>撮影方法・お客様へのご案内・報告の手順は、グループLINEで共有されたドライバー用・ガイド用マニュアルをご確認ください。</li>
+        </ol>
+        <p class="payment">同意後、報酬の振込先を登録する場合は、LINEのトークで<strong>「口座登録」</strong>と送信してください。口座情報はLINEトークに送信せず、専用フォームへ入力します。</p>
+        <label class="consent"><input id="consentCheck" type="checkbox"><span>上記のSNS動画施策参加同意書の内容を確認し、参加に同意します。</span></label>
+        <div id="notice" class="notice" role="alert"></div>
+        <button id="consentButton" class="button" type="button">内容を確認して同意する</button>
+      </div>
+      <div id="successView" class="hidden">
+        <h1>同意を受け付けました</h1>
+        <p id="successText" class="lead">SNS動画施策への参加同意を記録しました。</p>
+        <div class="next">振込先を登録する場合は、LINEのトークに戻って<strong>「口座登録」</strong>と送信してください。口座情報をLINEトークへ送信しないでください。</div>
+        <button id="closeButton" class="button" type="button">LINEに戻る</button>
+      </div>
+    </section>
+    <p class="footer">同意の記録には、LINEで本人確認したアカウントと同意日時を使用します。口座情報はこの画面では入力しません。</p>
+  </main>
+  <script>
+    (() => {
+      const state = { liffId: '', idToken: '' };
+      const $ = id => document.getElementById(id);
+      const notice = $('notice');
+      const showNotice = (message, kind = 'error') => { notice.textContent = message; notice.className = `notice ${kind}`; };
+      const clearNotice = () => { notice.textContent = ''; notice.className = 'notice'; };
+      async function request(url, options = {}) {
+        const response = await fetch(url, { credentials: 'same-origin', ...options });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data.success) throw new Error(data.error || '通信に失敗しました。');
+        return data;
+      }
+      $('consentButton').addEventListener('click', async () => {
+        clearNotice();
+        if (!$('consentCheck').checked) return showNotice('参加同意書の内容を確認し、同意にチェックしてください。');
+        const button = $('consentButton'); button.disabled = true; button.textContent = '同意を記録中…';
+        try {
+          const data = await request('/api/sns-video/liff-consent', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ idToken: state.idToken }) });
+          $('successText').textContent = `${data.userName}さんの参加同意を受け付けました。`;
+          $('consentView').classList.add('hidden'); $('successView').classList.remove('hidden');
+        } catch (error) { showNotice(error.message); }
+        finally { button.disabled = false; button.textContent = '内容を確認して同意する'; }
+      });
+      $('closeButton').addEventListener('click', () => { if (window.liff && liff.isInClient()) liff.closeWindow(); else window.close(); });
+      async function init() {
+        try {
+          const config = await request('/api/sns-video/liff-config'); state.liffId = config.liffId;
+          await liff.init({ liffId: state.liffId });
+          if (!liff.isLoggedIn()) { liff.login({ redirectUri: window.location.href }); return; }
+          state.idToken = liff.getIDToken();
+          if (!state.idToken) throw new Error('LINEで本人確認できませんでした。LINEアプリ内から開き直してください。');
+        } catch (error) {
+          const message = error && error.message === 'Failed to fetch' ? '同意画面を開始できませんでした。LINEアプリ内のリンクから開き直してください。' : (error.message || '同意画面を開始できませんでした。');
+          showNotice(message); $('consentButton').disabled = true;
+        }
+      }
+      init();
+    })();
+  </script>
+</body>
+</html>

@@ -19,6 +19,11 @@ const {
 const {
   validateLiffBankFormInput
 } = require('../lib/snsVideoLiffForm');
+const {
+  normalizeDisclosureRequest,
+  passwordMatches,
+  getRequestAuditContext
+} = require('../lib/snsVideoBankDisclosure');
 
 const app = express();
 app.use(cors({
@@ -1402,12 +1407,32 @@ app.post('/api/sns-video/liff-account', requireSnsVideoFormOrigin, async (req, r
 // --- 管理者向けAPIエンドポイント ---
 // 簡易パスワード認証ミドルウェア
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'trb-admin-2024';
+const ADMIN_PASSWORD_IS_CONFIGURED = typeof process.env.ADMIN_PASSWORD === 'string' && process.env.ADMIN_PASSWORD.length >= 12;
 function adminAuth(req, res, next) {
   const pw = req.headers['x-admin-password'] || req.query.adminPassword || (req.body && req.body.adminPassword);
   if (pw !== ADMIN_PASSWORD) {
     return res.status(401).json({ success: false, error: '認証エラー' });
   }
   next();
+}
+
+async function writeBankAccountAccessLog({ lineUid, viewerName = null, purpose, outcome, req }) {
+  const { ipAddress, userAgent } = getRequestAuditContext(req);
+  const { error } = await supabase.from('sns_video_bank_account_access_logs').insert({
+    line_uid: lineUid || 'unknown',
+    accessed_at: new Date().toISOString(),
+    access_purpose: purpose || 'payment_confirmation',
+    accessed_by: viewerName,
+    access_outcome: outcome,
+    access_method: 'admin_dashboard',
+    ip_address: ipAddress || null,
+    user_agent: userAgent || null
+  });
+  if (error) {
+    console.error('writeBankAccountAccessLog error:', error.message);
+    return false;
+  }
+  return true;
 }
 
 // スタッフ一覧取得
@@ -1461,6 +1486,78 @@ app.get('/api/admin/sns-video-submissions', adminAuth, async (req, res) => {
     };
   });
   return res.json({ success: true, records });
+});
+
+// SNS動画施策：支払い担当者だけが、理由と管理者パスワードの再入力後に対象者1名の口座原本を確認する。
+// 通常一覧・CSVにはこのAPIの平文値を使用しない。
+app.post('/api/admin/sns-video-bank-account-original', adminAuth, async (req, res) => {
+  const validated = normalizeDisclosureRequest(req.body || {});
+  const rawLineUid = String((req.body && req.body.lineUid) || '').trim().slice(0, 128);
+  const rawViewerName = String((req.body && req.body.viewerName) || '').trim().slice(0, 100);
+  const rawPurpose = String((req.body && req.body.purpose) || '').trim().replace(/\s+/g, ' ').slice(0, 300);
+
+  if (!validated.ok) {
+    await writeBankAccountAccessLog({
+      lineUid: rawLineUid,
+      viewerName: rawViewerName || null,
+      purpose: rawPurpose || 'payment_confirmation',
+      outcome: 'rejected_invalid_request',
+      req
+    });
+    return liffApiError(res, 400, validated.message);
+  }
+
+  const { lineUid, viewerName, purpose, disclosurePassword } = validated.value;
+  if (!ADMIN_PASSWORD_IS_CONFIGURED) {
+    await writeBankAccountAccessLog({ lineUid, viewerName, purpose, outcome: 'rejected_admin_password_not_configured', req });
+    return liffApiError(res, 503, '支払い用原本確認の管理者パスワード設定を確認できません。');
+  }
+  if (!passwordMatches(disclosurePassword, ADMIN_PASSWORD)) {
+    await writeBankAccountAccessLog({ lineUid, viewerName, purpose, outcome: 'rejected_reauthentication', req });
+    return liffApiError(res, 401, '管理者パスワードが一致しません。口座原本は表示されません。');
+  }
+
+  if (!BANK_INFO_ENCRYPTION_KEY || String(BANK_INFO_ENCRYPTION_KEY).length < 32) {
+    await writeBankAccountAccessLog({ lineUid, viewerName, purpose, outcome: 'rejected_encryption_key_unavailable', req });
+    return liffApiError(res, 503, '口座情報の復号設定を確認できません。');
+  }
+
+  const [{ data: account, error: accountError }, { data: user, error: userError }] = await Promise.all([
+    supabase.from('sns_video_bank_accounts')
+      .select('line_uid, bank_name_encrypted, branch_name_encrypted, account_type_encrypted, account_number_encrypted, account_holder_kana_encrypted, submitted_at')
+      .eq('line_uid', lineUid)
+      .maybeSingle(),
+    supabase.from('users').select('line_uid, name, role').eq('line_uid', lineUid).maybeSingle()
+  ]);
+  if (accountError || userError) {
+    await writeBankAccountAccessLog({ lineUid, viewerName, purpose, outcome: 'failed_data_lookup', req });
+    return liffApiError(res, 500, '口座情報を確認できませんでした。');
+  }
+  if (!account || !user) {
+    await writeBankAccountAccessLog({ lineUid, viewerName, purpose, outcome: 'not_found', req });
+    return liffApiError(res, 404, '対象スタッフの登録済み口座が見つかりません。');
+  }
+
+  try {
+    const original = {
+      name: user.name || '未設定',
+      role: user.role || '',
+      bankName: decryptObject(account.bank_name_encrypted, BANK_INFO_ENCRYPTION_KEY).value,
+      branchName: decryptObject(account.branch_name_encrypted, BANK_INFO_ENCRYPTION_KEY).value,
+      accountType: decryptObject(account.account_type_encrypted, BANK_INFO_ENCRYPTION_KEY).value,
+      accountNumber: decryptObject(account.account_number_encrypted, BANK_INFO_ENCRYPTION_KEY).value,
+      accountHolderKana: decryptObject(account.account_holder_kana_encrypted, BANK_INFO_ENCRYPTION_KEY).value,
+      submittedAt: account.submitted_at
+    };
+    const logged = await writeBankAccountAccessLog({ lineUid, viewerName, purpose, outcome: 'viewed', req });
+    if (!logged) return liffApiError(res, 503, '監査ログを保存できないため、口座原本は表示しません。SQL移行を確認してください。');
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    return res.json({ success: true, original, expiresInSeconds: 60 });
+  } catch (err) {
+    console.error('sns-video-bank-account-original decrypt error:', err.message);
+    await writeBankAccountAccessLog({ lineUid, viewerName, purpose, outcome: 'failed_decryption', req });
+    return liffApiError(res, 500, '口座情報を復号できませんでした。暗号化鍵の設定を確認してください。');
+  }
 });
 
 // 時給更新

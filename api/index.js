@@ -79,8 +79,9 @@ const BANK_INFO_ENCRYPTION_KEY = process.env.BANK_INFO_ENCRYPTION_KEY;
 const LINE_LOGIN_CHANNEL_ID = process.env.LINE_LOGIN_CHANNEL_ID;
 const LIFF_ID = process.env.SNS_VIDEO_LIFF_ID;
 const SNS_VIDEO_LIFF_URL = LIFF_ID ? `https://liff.line.me/${LIFF_ID}` : null;
+const SNS_VIDEO_CONSENT_LIFF_URL = SNS_VIDEO_LIFF_URL ? `${SNS_VIDEO_LIFF_URL}?mode=consent` : null;
 const SNS_VIDEO_FORM_ORIGIN = process.env.SNS_VIDEO_FORM_ORIGIN || 'https://trb-backend.vercel.app';
-const SNS_VIDEO_LIFF_FORM_VERSION = '2026-09-01';
+const SNS_VIDEO_LIFF_FORM_VERSION = '2026-09-02';
 
 // --- Supabase クライアント ---
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
@@ -599,6 +600,14 @@ async function saveSnsVideoConsent(uid, messageId) {
   if (error) throw error;
 }
 
+async function sendSnsVideoConsentGuide(replyToken) {
+  if (!LINE_LOGIN_CHANNEL_ID || !LIFF_ID || !SNS_VIDEO_CONSENT_LIFF_URL) {
+    await replyToUser(replyToken, '参加同意の閲覧準備中です。恐れ入りますが、管理者へご連絡ください。');
+    return;
+  }
+  await replyToUser(replyToken, `【SNS動画施策｜参加同意】\n内容の確認と同意は、以下の専用画面から行えます。\n\n${SNS_VIDEO_CONSENT_LIFF_URL}\n\n同意後、振込先を登録する場合は「口座登録」と送信してください。口座情報をLINEトークへ送信しないでください。`);
+}
+
 async function handleBankAccountFlow(uid, text, replyToken, state) {
   if (!BANK_INFO_ENCRYPTION_KEY || String(BANK_INFO_ENCRYPTION_KEY).length < 32) {
     await setUserState(uid, '');
@@ -734,6 +743,11 @@ async function handleTextMessage(uid, text, replyToken, messageId = null) {
       console.error('saveSnsVideoConsent error:', err.message);
       await replyToUser(replyToken, '同意の保存中にエラーが発生しました。お手数ですが管理者へご連絡ください。');
     }
+    return;
+  }
+
+  if (['参加同意', '参加同意内容', 'SNS動画施策', 'SNS動画施策の同意'].includes(text)) {
+    await sendSnsVideoConsentGuide(replyToken);
     return;
   }
 
@@ -1324,7 +1338,8 @@ app.get('/sns-video-bank', (req, res) => {
   try {
     // fs.readFileSyncとprocess.cwd()の組合せにより、VercelのNode File Traceが
     // public配下のLIFFフォームをServerless Functionへ同梱できるようにする。
-    const formPath = path.join(process.cwd(), 'public', 'sns-video-bank.html');
+    const formFilename = req.query.mode === 'consent' ? 'sns-video-consent.html' : 'sns-video-bank.html';
+    const formPath = path.join(process.cwd(), 'public', formFilename);
     const formHtml = fs.readFileSync(formPath, 'utf8');
     return res.type('html').send(formHtml);
   } catch (err) {
@@ -1338,6 +1353,43 @@ app.get('/api/sns-video/liff-config', (req, res) => {
     return liffApiError(res, 503, '口座登録フォームは準備中です。管理者へご連絡ください。');
   }
   return res.json({ success: true, liffId: LIFF_ID, formVersion: SNS_VIDEO_LIFF_FORM_VERSION });
+});
+
+// SNS動画施策：既存登録スタッフは、LINEトークへ個人情報を送らずに参加同意内容を閲覧・同意できる。
+app.post('/api/sns-video/liff-consent', requireSnsVideoFormOrigin, async (req, res) => {
+  const idToken = req.body && req.body.idToken;
+  if (!idToken) return liffApiError(res, 400, 'LINEで本人確認できませんでした。LINEアプリ内から開き直してください。');
+  try {
+    const lineProfile = await verifyLiffIdToken(idToken);
+    const lineUid = lineProfile.sub;
+    const user = await getUserInfo(lineUid);
+    if (!user || !String(user.name || '').trim() || user.name === lineUid) {
+      return liffApiError(res, 403, 'スタッフ登録を確認できません。先にLINEで「登録」と送信し、氏名・役職の登録を完了してください。');
+    }
+    await saveSnsVideoConsent(lineUid, null);
+    const { error: accessLogError } = await supabase.from('sns_video_bank_account_access_logs').insert({
+      line_uid: lineUid,
+      accessed_at: new Date().toISOString(),
+      access_purpose: 'liff_sns_video_consent',
+      accessed_by: lineUid,
+      access_outcome: 'consented',
+      access_method: 'liff_form'
+    });
+    if (accessLogError) console.error('sns-video liff consent access log error:', accessLogError.message);
+    return res.json({ success: true, userName: user.name });
+  } catch (err) {
+    const knownError = ['LIFF_ID_TOKEN_REQUIRED', 'LIFF_ID_TOKEN_INVALID', 'LIFF_ID_TOKEN_TIMEOUT'];
+    if (knownError.includes(err.message)) {
+      const messages = {
+        LIFF_ID_TOKEN_REQUIRED: 'LINEで本人確認できませんでした。LINEアプリ内から開き直してください。',
+        LIFF_ID_TOKEN_INVALID: 'LINEで本人確認できませんでした。LINEアプリ内から開き直してください。',
+        LIFF_ID_TOKEN_TIMEOUT: '本人確認に時間がかかっています。時間をおいて再度お試しください。'
+      };
+      return liffApiError(res, 400, messages[err.message]);
+    }
+    console.error('sns-video liff consent save error:', err.message);
+    return liffApiError(res, 500, '参加同意を保存できませんでした。時間をおいて再度お試しください。');
+  }
 });
 
 app.post('/api/sns-video/liff-account', requireSnsVideoFormOrigin, async (req, res) => {

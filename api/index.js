@@ -1407,7 +1407,12 @@ app.post('/api/sns-video/liff-account', requireSnsVideoFormOrigin, async (req, r
 // --- 管理者向けAPIエンドポイント ---
 // 簡易パスワード認証ミドルウェア
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'trb-admin-2024';
-const ADMIN_PASSWORD_IS_CONFIGURED = typeof process.env.ADMIN_PASSWORD === 'string' && process.env.ADMIN_PASSWORD.length >= 12;
+function getConfiguredAdminPassword() {
+  const configuredPassword = process.env.ADMIN_PASSWORD;
+  if (typeof configuredPassword !== 'string') return null;
+  if (configuredPassword.trim().length < 12) return null;
+  return configuredPassword;
+}
 function adminAuth(req, res, next) {
   const pw = req.headers['x-admin-password'] || req.query.adminPassword || (req.body && req.body.adminPassword);
   if (pw !== ADMIN_PASSWORD) {
@@ -1508,11 +1513,12 @@ app.post('/api/admin/sns-video-bank-account-original', adminAuth, async (req, re
   }
 
   const { lineUid, viewerName, purpose, disclosurePassword } = validated.value;
-  if (!ADMIN_PASSWORD_IS_CONFIGURED) {
+  const configuredAdminPassword = getConfiguredAdminPassword();
+  if (!configuredAdminPassword) {
     await writeBankAccountAccessLog({ lineUid, viewerName, purpose, outcome: 'rejected_admin_password_not_configured', req });
     return liffApiError(res, 503, '支払い用原本確認の管理者パスワード設定を確認できません。');
   }
-  if (!passwordMatches(disclosurePassword, ADMIN_PASSWORD)) {
+  if (!passwordMatches(disclosurePassword, configuredAdminPassword)) {
     await writeBankAccountAccessLog({ lineUid, viewerName, purpose, outcome: 'rejected_reauthentication', req });
     return liffApiError(res, 401, '管理者パスワードが一致しません。口座原本は表示されません。');
   }
